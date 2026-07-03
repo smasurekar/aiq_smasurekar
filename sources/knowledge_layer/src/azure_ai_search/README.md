@@ -55,8 +55,10 @@ enabled; it also requires `use_hybrid: true`.
 
 When `AZURE_SEARCH_API_KEY` is absent, the adapter uses
 `DefaultAzureCredential`. Set `AZURE_CLIENT_ID` when a user-assigned identity
-should be selected. The identity needs permission to create and delete indexes
-and to read, write, and delete index documents.
+should be selected. Enable role-based access on the search service and grant
+the identity `Search Service Contributor` for index management plus `Search
+Index Data Contributor` for document ingestion and retrieval. Assign both roles
+at the search-service scope because AI-Q creates one index per collection.
 
 The adapter parses PDF, DOCX, TXT, and Markdown uploads with LlamaIndex,
 creates one namespaced Azure AI Search index per AI-Q collection, and performs

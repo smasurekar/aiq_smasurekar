@@ -169,7 +169,9 @@ functions:
 
 Set `AZURE_SEARCH_ENDPOINT` and `NVIDIA_API_KEY` in the environment. Setting
 `AZURE_SEARCH_API_KEY` selects key authentication; otherwise Azure
-`DefaultAzureCredential` is used. Embedding defaults can be shared with the
+`DefaultAzureCredential` is used. The workload identity needs `Search Service
+Contributor` for index management and `Search Index Data Contributor` for
+document ingestion and retrieval. Embedding defaults can be shared with the
 LlamaIndex backend through `AIQ_EMBED_BASE_URL` and `AIQ_EMBED_MODEL`; set
 `AIQ_EMBED_DIM` when changing the model dimensions.
 

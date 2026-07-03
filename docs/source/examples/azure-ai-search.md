@@ -25,6 +25,21 @@ export NVIDIA_API_KEY=<embedding-api-key>
 export AZURE_SEARCH_API_KEY=<search-admin-key>
 ```
 
+## Grant managed identity access
+
+When `AZURE_SEARCH_API_KEY` is absent, enable role-based access on the Azure AI
+Search service and grant the workload identity both of these built-in roles:
+
+| Role | Used for |
+|------|----------|
+| `Search Service Contributor` | Create, inspect, update, and delete AI-Q collection indexes. |
+| `Search Index Data Contributor` | Upload, query, and delete index documents. |
+
+Assign the roles at the search-service scope because AI-Q creates one index per
+logical collection. The principal ID is the object ID of the system-assigned or
+user-assigned managed identity running AI-Q.
+
+
 Replace the `knowledge_search` block in a web configuration such as
 `configs/config_web_default_llamaindex.yml`:
 
