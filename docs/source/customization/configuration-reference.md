@@ -280,7 +280,7 @@ environment. `AZURE_SEARCH_API_KEY` is optional; when absent, the adapter uses
 | `azure_search_auth_mode` | `str` | Auto | Uses `api_key` when `AZURE_SEARCH_API_KEY` is set; otherwise `managed_identity`. |
 | `azure_search_api_key` | `SecretStr` | `AZURE_SEARCH_API_KEY` | Optional admin API key. |
 | `azure_search_index_prefix` | `str` | `AIQ_AZURE_SEARCH_INDEX_PREFIX` or `aiq` | Namespace prefix for AI-Q-owned indexes. |
-| `embed_endpoint` | `URL` | `AIQ_EMBED_BASE_URL` or NVIDIA API | OpenAI-compatible embedding endpoint. |
+| `embed_base_url` | `URL` | `AIQ_EMBED_BASE_URL` or NVIDIA API | OpenAI-compatible embedding base URL. |
 | `embed_model` | `str` | `AIQ_EMBED_MODEL` or `nvidia/nv-embed-v1` | Embedding model used for Azure ingestion and retrieval. |
 | `embed_dim` | `int` | `AIQ_EMBED_DIM` or `4096` | Embedding dimensions; must match the model and existing index schema. |
 | `embed_api_key` | `SecretStr` | `None` | Optional embedding API key; falls back to `NVIDIA_API_KEY`. |

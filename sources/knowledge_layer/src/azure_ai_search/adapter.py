@@ -83,7 +83,7 @@ def _coerce_config(config: dict[str, Any] | None) -> SimpleNamespace:
     values: dict[str, Any] = {
         "endpoint": os.environ.get("AZURE_SEARCH_ENDPOINT"),
         "api_key": os.environ.get("AZURE_SEARCH_API_KEY"),
-        "embed_endpoint": os.environ.get("AIQ_EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        "embed_base_url": os.environ.get("AIQ_EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         "embed_model": os.environ.get("AIQ_EMBED_MODEL", "nvidia/nv-embed-v1"),
         "embed_dim": int(os.environ.get("AIQ_EMBED_DIM", "4096")),
         "embed_api_key": None,
@@ -418,7 +418,7 @@ class _AzureIndexMixin:
 
             self._embedding = NVIDIAEmbedding(
                 model=self.cfg.embed_model,
-                base_url=str(self.cfg.embed_endpoint),
+                base_url=str(self.cfg.embed_base_url),
                 api_key=_secret_value(self.cfg.embed_api_key),
             )
         return self._embedding

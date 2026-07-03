@@ -185,7 +185,7 @@ def _config(**overrides):
         "api_key": SecretStr("test-key"),
         "embed_model": "test-embed",
         "embed_dim": 4,
-        "embed_endpoint": "https://integrate.api.nvidia.com/v1",
+        "embed_base_url": "https://integrate.api.nvidia.com/v1",
         "use_hybrid": True,
         "use_semantic_ranker": True,
         "start_ttl_cleanup": False,
@@ -250,7 +250,7 @@ def test_config_uses_shared_environment_defaults(monkeypatch):
     assert backend_config["auth_mode"] == "api_key"
     assert backend_config["api_key"].get_secret_value() == "env-search-key"
     assert backend_config["index_prefix"] == "env-aiq"
-    assert backend_config["embed_endpoint"] == "https://embed.example.com/v1"
+    assert backend_config["embed_base_url"] == "https://embed.example.com/v1"
     assert backend_config["embed_model"] == "env-embed"
     assert backend_config["embed_dim"] == 8
     assert adapter_config.endpoint == "https://env.search.windows.net"

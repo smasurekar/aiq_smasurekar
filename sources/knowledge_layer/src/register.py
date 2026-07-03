@@ -102,9 +102,9 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
         min_length=1,
         description="Prefix for AI-Q-owned indexes; defaults to AIQ_AZURE_SEARCH_INDEX_PREFIX or aiq",
     )
-    embed_endpoint: HttpUrl = Field(
+    embed_base_url: HttpUrl = Field(
         default_factory=lambda: _url_from_env("AIQ_EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-        description="Embedding endpoint; defaults to AIQ_EMBED_BASE_URL",
+        description="Embedding base URL; defaults to AIQ_EMBED_BASE_URL",
     )
     embed_model: str = Field(
         default_factory=lambda: os.environ.get("AIQ_EMBED_MODEL", "nvidia/nv-embed-v1"),
@@ -218,7 +218,7 @@ def _setup_backend(config: KnowledgeRetrievalConfig, summary_llm_obj=None) -> tu
             "api_key": config.azure_search_api_key,
             "auth_mode": config.azure_search_auth_mode,
             "index_prefix": config.azure_search_index_prefix,
-            "embed_endpoint": str(config.embed_endpoint),
+            "embed_base_url": str(config.embed_base_url),
             "embed_model": config.embed_model,
             "embed_dim": config.embed_dim,
             "embed_api_key": config.embed_api_key,
