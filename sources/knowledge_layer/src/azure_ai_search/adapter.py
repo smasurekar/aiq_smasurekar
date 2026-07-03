@@ -88,7 +88,7 @@ def _coerce_config(config: dict[str, Any] | None) -> SimpleNamespace:
         "embed_dim": int(os.environ.get("AIQ_EMBED_DIM", "4096")),
         "embed_api_key": None,
         "use_hybrid": True,
-        "use_semantic_ranker": True,
+        "use_semantic_ranker": False,
         "chunk_size": 512,
         "chunk_overlap": 64,
         "summary_max_chars": 1000,

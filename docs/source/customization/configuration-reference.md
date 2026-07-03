@@ -256,7 +256,7 @@ functions:
     backend: azure_ai_search
     collection_name: ${COLLECTION_NAME:-test_collection}
     use_hybrid: true
-    use_semantic_ranker: true
+    use_semantic_ranker: false
 ```
 
 This example reads `AZURE_SEARCH_ENDPOINT` and `NVIDIA_API_KEY` from the
@@ -285,7 +285,7 @@ environment. `AZURE_SEARCH_API_KEY` is optional; when absent, the adapter uses
 | `embed_dim` | `int` | `AIQ_EMBED_DIM` or `4096` | Embedding dimensions; must match the model and existing index schema. |
 | `embed_api_key` | `SecretStr` | `None` | Optional embedding API key; falls back to `NVIDIA_API_KEY`. |
 | `use_hybrid` | `bool` | `true` | Combine lexical and vector retrieval. |
-| `use_semantic_ranker` | `bool` | `true` | Apply Azure semantic ranking; requires `use_hybrid: true`. |
+| `use_semantic_ranker` | `bool` | `false` | Apply Azure semantic ranking when supported; requires `use_hybrid: true`. |
 | `chunk_size` | `int` | `512` | Tokens per Azure-ingested chunk. |
 | `chunk_overlap` | `int` | `64` | Token overlap; must be smaller than `chunk_size`. |
 | `summary_max_chars` | `int` | `1000` | Maximum document characters sent to the summary model. |

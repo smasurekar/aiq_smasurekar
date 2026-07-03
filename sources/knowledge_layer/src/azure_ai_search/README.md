@@ -33,7 +33,7 @@ functions:
     backend: azure_ai_search
     collection_name: ${COLLECTION_NAME:-aiq_default}
     use_hybrid: true
-    use_semantic_ranker: true
+    use_semantic_ranker: false
     top_k: 5
     chunk_size: 512
     chunk_overlap: 64
@@ -48,6 +48,10 @@ Search uses `AZURE_SEARCH_ENDPOINT` and optional `AZURE_SEARCH_API_KEY`.
 Embedding configuration shares `AIQ_EMBED_BASE_URL`, `AIQ_EMBED_MODEL`, and
 `NVIDIA_API_KEY` with the LlamaIndex backend; Azure additionally accepts
 `AIQ_EMBED_DIM` and `AIQ_AZURE_SEARCH_INDEX_PREFIX`.
+
+Semantic ranking is disabled by default because support depends on the Azure AI
+Search service. Set `use_semantic_ranker: true` only when semantic ranking is
+enabled; it also requires `use_hybrid: true`.
 
 When `AZURE_SEARCH_API_KEY` is absent, the adapter uses
 `DefaultAzureCredential`. Set `AZURE_CLIENT_ID` when a user-assigned identity

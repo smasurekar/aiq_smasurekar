@@ -120,7 +120,12 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
         description="Optional embedding API key; NVIDIA_API_KEY is used when omitted",
     )
     use_hybrid: bool = Field(default=True, description="Combine vector and keyword search (azure_ai_search only)")
-    use_semantic_ranker: bool = Field(default=True, description="Enable Azure semantic ranking (azure_ai_search only)")
+    use_semantic_ranker: bool = Field(
+        default=False,
+        description=(
+            "Enable Azure semantic ranking when supported by the Azure AI Search service (azure_ai_search only)"
+        ),
+    )
     chunk_size: int = Field(default=512, gt=0, description="Tokens per chunk (azure_ai_search only)")
     chunk_overlap: int = Field(default=64, ge=0, description="Token overlap between chunks (azure_ai_search only)")
     summary_max_chars: int = Field(

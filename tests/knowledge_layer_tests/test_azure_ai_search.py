@@ -224,6 +224,11 @@ def test_backend_registered_and_implements_sdk_contracts():
 def test_config_requires_endpoint_and_valid_hybrid_semantic_combination():
     with pytest.raises(ValueError, match="azure_search_endpoint"):
         KnowledgeRetrievalConfig(backend="azure_ai_search")
+    config = KnowledgeRetrievalConfig(
+        backend="azure_ai_search",
+        azure_search_endpoint="https://example.search.windows.net",
+    )
+    assert not config.use_semantic_ranker
     with pytest.raises(ValueError, match="use_semantic_ranker"):
         KnowledgeRetrievalConfig(
             backend="azure_ai_search",
@@ -253,8 +258,10 @@ def test_config_uses_shared_environment_defaults(monkeypatch):
     assert backend_config["embed_base_url"] == "https://embed.example.com/v1"
     assert backend_config["embed_model"] == "env-embed"
     assert backend_config["embed_dim"] == 8
+    assert not backend_config["use_semantic_ranker"]
     assert adapter_config.endpoint == "https://env.search.windows.net"
     assert adapter_config.auth_mode == "api_key"
+    assert not adapter_config.use_semantic_ranker
 
 
 def test_api_key_auth_requires_secret():

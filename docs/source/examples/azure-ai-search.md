@@ -36,7 +36,7 @@ functions:
     collection_name: ${COLLECTION_NAME:-aiq_default}
     top_k: 5
     use_hybrid: true
-    use_semantic_ranker: true
+    use_semantic_ranker: false
 
     generate_summary: true
     summary_model: summary_llm
@@ -49,6 +49,10 @@ selects API-key authentication when present; otherwise the adapter uses
 identity. Embeddings share `AIQ_EMBED_BASE_URL`, `AIQ_EMBED_MODEL`, and
 `NVIDIA_API_KEY` with the LlamaIndex backend. Azure-specific optional settings
 are `AIQ_EMBED_DIM` and `AIQ_AZURE_SEARCH_INDEX_PREFIX`.
+
+Semantic ranking is opt-in because availability depends on the Azure AI Search
+service. Set `use_semantic_ranker: true` only when semantic ranking is enabled;
+it also requires `use_hybrid: true`.
 
 Existing indexes must use the configured `embed_dim`. Delete and re-ingest a
 collection when changing embedding dimensions. Frontend WebSocket queries use

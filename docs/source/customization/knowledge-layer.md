@@ -164,7 +164,7 @@ functions:
     backend: azure_ai_search
     collection_name: my_docs
     use_hybrid: true
-    use_semantic_ranker: true
+    use_semantic_ranker: false
 ```
 
 Set `AZURE_SEARCH_ENDPOINT` and `NVIDIA_API_KEY` in the environment. Setting
@@ -172,6 +172,10 @@ Set `AZURE_SEARCH_ENDPOINT` and `NVIDIA_API_KEY` in the environment. Setting
 `DefaultAzureCredential` is used. Embedding defaults can be shared with the
 LlamaIndex backend through `AIQ_EMBED_BASE_URL` and `AIQ_EMBED_MODEL`; set
 `AIQ_EMBED_DIM` when changing the model dimensions.
+
+Semantic ranking is disabled by default because support depends on the Azure AI
+Search service. Set `use_semantic_ranker: true` only when semantic ranking is
+enabled; it also requires `use_hybrid: true`.
 
 Azure maps logical collection names to collision-safe physical indexes under `azure_search_index_prefix`. Only
 indexes containing an AI-Q ownership and schema marker are listed, queried, or deleted. Legacy indexes named directly
