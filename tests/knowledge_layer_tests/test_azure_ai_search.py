@@ -500,6 +500,12 @@ def test_pagination_is_exhaustive_and_file_ids_are_odata_escaped(monkeypatch):
 
 def test_same_name_replacement_removes_old_generation(monkeypatch, tmp_path):
     _install_reader(monkeypatch)
+    cleared = []
+    monkeypatch.setattr(
+        azure_adapter,
+        "unregister_summary",
+        lambda collection, file_name: cleared.append((collection, file_name)),
+    )
     path = tmp_path / "document.txt"
     path.write_text("new content", encoding="utf-8")
     ingestor, client = _ingestor()
@@ -533,6 +539,7 @@ def test_same_name_replacement_removes_old_generation(monkeypatch, tmp_path):
     assert count == 1
     assert set(client.documents) == {"new-00000000"}
     assert client.documents["new-00000000"]["metadata"] == '{"tenant":"alpha"}'
+    assert cleared == []
 
 
 def test_failed_new_generation_preserves_old_generation(monkeypatch, tmp_path):
@@ -637,7 +644,7 @@ def test_failed_uploads_remain_visible():
 
 
 def test_ttl_deletes_only_expired_owned_collection_and_clears_summary(monkeypatch):
-    ingestor, _client = _ingestor()
+    ingestor, _client = _ingestor(generate_summary=True)
     ingestor.create_collection("old")
     ingestor.create_collection("new")
     old_name = ingestor._physical_index_name("old")
@@ -662,7 +669,7 @@ def test_ttl_deletes_only_expired_owned_collection_and_clears_summary(monkeypatc
 
 
 def test_collection_summary_clears_only_after_confirmed_delete(monkeypatch):
-    ingestor, _client = _ingestor()
+    ingestor, _client = _ingestor(generate_summary=True)
     ingestor.create_collection("docs")
     cleared = []
     monkeypatch.setattr(azure_adapter, "clear_collection_summaries", cleared.append)
@@ -674,7 +681,7 @@ def test_collection_summary_clears_only_after_confirmed_delete(monkeypatch):
 
 
 def test_file_summary_clears_only_after_confirmed_delete(monkeypatch):
-    ingestor, client = _ingestor()
+    ingestor, client = _ingestor(generate_summary=True)
     ingestor.create_collection("docs")
     client.documents["file-1-00000000"] = {
         "id": "file-1-00000000",
@@ -692,6 +699,31 @@ def test_file_summary_clears_only_after_confirmed_delete(monkeypatch):
     with pytest.raises(RuntimeError, match="rejected delete"):
         ingestor.delete_file("file-1", "docs")
 
+    assert cleared == []
+
+
+def test_summary_cleanup_is_skipped_when_summaries_are_disabled(monkeypatch):
+    ingestor, client = _ingestor()
+    ingestor.create_collection("docs")
+    client.documents["file-1-00000000"] = {
+        "id": "file-1-00000000",
+        "file_id": "file-1",
+        "file_name": "report.pdf",
+        "file_size": 1,
+        "uploaded_at": datetime.now(UTC),
+        "ingested_at": datetime.now(UTC),
+        "metadata": "{}",
+    }
+    cleared = []
+    monkeypatch.setattr(
+        azure_adapter,
+        "unregister_summary",
+        lambda collection, file_name: cleared.append((collection, file_name)),
+    )
+    monkeypatch.setattr(azure_adapter, "clear_collection_summaries", lambda collection: cleared.append((collection,)))
+
+    assert ingestor.delete_file("file-1", "docs")
+    assert ingestor.delete_collection("docs")
     assert cleared == []
 
 

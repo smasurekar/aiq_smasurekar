@@ -798,7 +798,7 @@ class AzureAISearchIngestor(TTLCleanupMixin, _AzureIndexMixin, BaseIngestor):
         summary = self._generate_summary("\n".join(texts), file_name) if self.cfg.generate_summary else None
         if summary:
             register_summary(collection_name, file_name, summary)
-        elif old_file_ids:
+        elif self.cfg.generate_summary and old_file_ids:
             unregister_summary(collection_name, file_name)
 
         with self._jobs_lock:
@@ -983,7 +983,8 @@ class AzureAISearchIngestor(TTLCleanupMixin, _AzureIndexMixin, BaseIngestor):
         self._search_clients.pop(name, None)
         with self._jobs_lock:
             self._files = {file_id: info for file_id, info in self._files.items() if info.collection_name != name}
-        clear_collection_summaries(name)
+        if self.cfg.generate_summary:
+            clear_collection_summaries(name)
         return True
 
     def list_collections(self) -> list[CollectionInfo]:
@@ -1068,7 +1069,7 @@ class AzureAISearchIngestor(TTLCleanupMixin, _AzureIndexMixin, BaseIngestor):
                 item.file_name == info.file_name and item.file_id != file_id
                 for item in self.list_files(collection_name)
             )
-            if not remaining_same_name:
+            if self.cfg.generate_summary and not remaining_same_name:
                 unregister_summary(collection_name, info.file_name)
             self._update_collection_timestamp(collection_name)
         return True
