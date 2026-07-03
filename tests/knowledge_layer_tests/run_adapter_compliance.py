@@ -397,12 +397,12 @@ class AdapterComplianceTest:
         if not result:
             return False, f"delete_file returned False for '{filename}'"
 
-        # Verify deletion
-        remaining = self.ingestor.list_files(self.collection_name)
-        remaining_names = [f.file_name for f in remaining]
-
-        if filename in remaining_names:
-            return False, f"File '{filename}' still exists after deletion"
+        # Azure AI Search applies document deletions asynchronously.
+        deadline = time.monotonic() + min(self.timeout, 30)
+        while filename in {file.file_name for file in self.ingestor.list_files(self.collection_name)}:
+            if time.monotonic() >= deadline:
+                return False, f"File '{filename}' still exists after deletion"
+            time.sleep(1)
 
         return True, f"Deleted '{filename}'"
 
