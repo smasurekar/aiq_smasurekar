@@ -26,6 +26,8 @@ import os
 from typing import Literal
 
 from pydantic import Field
+from pydantic import HttpUrl
+from pydantic import SecretStr
 from pydantic import model_validator
 
 from nat.builder.builder import Builder
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 # Type-safe backend selection - Pydantic validates at config load time
-BackendType = Literal["llamaindex", "foundational_rag"]
+BackendType = Literal["llamaindex", "foundational_rag", "azure_ai_search"]
 
 
 class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
@@ -72,6 +74,45 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
     verify_ssl: bool = Field(
         default=True, description="Verify SSL certificates (foundational_rag only). Set false for self-signed certs."
     )
+    # Azure AI Search options
+    azure_search_endpoint: HttpUrl | None = Field(
+        default=None,
+        description="Azure AI Search service URL (azure_ai_search only)",
+    )
+    azure_search_api_key: SecretStr | None = Field(
+        default=None,
+        description="Optional Azure AI Search admin key; managed identity is used when omitted",
+    )
+    azure_search_auth_mode: Literal["managed_identity", "api_key"] = Field(
+        default="managed_identity",
+        description="Authentication mode for Azure AI Search",
+    )
+    embed_endpoint: HttpUrl = Field(
+        default=HttpUrl("https://integrate.api.nvidia.com/v1"),
+        description="OpenAI-compatible embedding endpoint (azure_ai_search only)",
+    )
+    embed_model: str = Field(
+        default="nvidia/nv-embed-v1",
+        description="Embedding model name (azure_ai_search only)",
+    )
+    embed_dim: int = Field(
+        default=4096,
+        gt=0,
+        description="Embedding dimensions; must match existing Azure AI Search indexes",
+    )
+    embed_api_key: SecretStr | None = Field(
+        default=None,
+        description="Optional embedding API key; NVIDIA_API_KEY is used when omitted",
+    )
+    use_hybrid: bool = Field(default=True, description="Combine vector and keyword search (azure_ai_search only)")
+    use_semantic_ranker: bool = Field(default=True, description="Enable Azure semantic ranking (azure_ai_search only)")
+    chunk_size: int = Field(default=512, gt=0, description="Tokens per chunk (azure_ai_search only)")
+    chunk_overlap: int = Field(default=64, ge=0, description="Token overlap between chunks (azure_ai_search only)")
+    summary_max_chars: int = Field(
+        default=1000,
+        gt=0,
+        description="Maximum document characters sent to summary model (azure_ai_search only)",
+    )
 
     @model_validator(mode="after")
     def validate_backend_config(self):
@@ -98,6 +139,14 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
                 logger.warning("chroma_dir is ignored for foundational_rag backend")
             if not self.verify_ssl:
                 logger.warning("SSL verification disabled for foundational_rag. Use only in trusted environments.")
+
+        elif backend == "azure_ai_search":
+            if self.azure_search_endpoint is None:
+                raise ValueError("azure_ai_search requires azure_search_endpoint")
+            if self.azure_search_auth_mode == "api_key" and self.azure_search_api_key is None:
+                raise ValueError("azure_search_auth_mode=api_key requires azure_search_api_key")
+            if self.chunk_overlap >= self.chunk_size:
+                raise ValueError("chunk_overlap must be smaller than chunk_size")
 
         return self
 
@@ -144,8 +193,29 @@ def _setup_backend(config: KnowledgeRetrievalConfig, summary_llm_obj=None) -> tu
             **summary_config,
         }
 
+    elif backend == "azure_ai_search":
+        import knowledge_layer.azure_ai_search.adapter  # noqa: F401
+
+        backend_config = {
+            "endpoint": str(config.azure_search_endpoint),
+            "api_key": config.azure_search_api_key,
+            "auth_mode": config.azure_search_auth_mode,
+            "embed_endpoint": str(config.embed_endpoint),
+            "embed_model": config.embed_model,
+            "embed_dim": config.embed_dim,
+            "embed_api_key": config.embed_api_key,
+            "use_hybrid": config.use_hybrid,
+            "use_semantic_ranker": config.use_semantic_ranker,
+            "chunk_size": config.chunk_size,
+            "chunk_overlap": config.chunk_overlap,
+            "summary_max_chars": config.summary_max_chars,
+            "collection_name": config.collection_name,
+            "cleanup_files": True,
+            **summary_config,
+        }
+
     else:
-        raise ValueError(f"Unknown backend: {backend}. Use 'llamaindex' or 'foundational_rag'.")
+        raise ValueError(f"Unknown backend: {backend}. Use 'llamaindex', 'foundational_rag', or 'azure_ai_search'.")
 
     os.environ["KNOWLEDGE_RETRIEVER_BACKEND"] = backend
     os.environ["KNOWLEDGE_INGESTOR_BACKEND"] = backend

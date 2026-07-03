@@ -12,6 +12,9 @@ uv pip install -e "sources/knowledge_layer[llamaindex]"
 
 # With Foundational RAG (hosted production)
 uv pip install -e "sources/knowledge_layer[foundational_rag]"
+
+# With Azure AI Search
+uv pip install -e "sources/knowledge_layer[azure_ai_search]"
 ```
 
 ## Available Backends
@@ -20,7 +23,11 @@ uv pip install -e "sources/knowledge_layer[foundational_rag]"
 |---------|-------------|----------|
 | `llamaindex` | ChromaDB | Development, prototyping |
 | `foundational_rag` | Remote Milvus | Production, multi-user |
+| `azure_ai_search` | Azure AI Search | Managed hybrid and semantic search |
 
 ## Usage
 
 See [Web UI Mode](./KNOWLEDGE-LAYER-SETUP.md#web-ui-mode) for document upload and chat interfaces.
+
+Azure AI Search configuration and operational notes are in the
+[backend README](./src/azure_ai_search/README.md).

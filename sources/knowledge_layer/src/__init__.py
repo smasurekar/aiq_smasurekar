@@ -22,6 +22,7 @@ across multiple applications.
 Available Backends:
 - llamaindex: LlamaIndex + ChromaDB (lightweight, local)
 - foundational_rag: Hosted NVIDIA RAG Blueprint (production, multi-user)
+- azure_ai_search: Azure AI Search with client-side embeddings
 
 Note: NAT tool registrations require NAT to be installed.
 The adapter modules can be used standalone without NAT.
