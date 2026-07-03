@@ -43,6 +43,7 @@ A pluggable abstraction for document ingestion and retrieval. Swap backends with
 |---------|-------------|------|--------------|----------|
 | `llamaindex` | `"llamaindex"` | Local Library | ChromaDB | Dev, prototyping, macOS/Linux |
 | `foundational_rag` | `"foundational_rag"` | Hosted Service | Remote Milvus | Production, multi-user |
+| `azure_ai_search` | `"azure_ai_search"` | Managed Service | Azure AI Search | Hybrid and semantic retrieval |
 
 **Local Library Mode** - Everything runs in your Python process. No external services needed.
 - **`llamaindex`** - LlamaIndex + ChromaDB. Lightweight, great for development. Works on macOS and Linux.
@@ -52,6 +53,8 @@ A pluggable abstraction for document ingestion and retrieval. Swap backends with
   - Tested with: **NVIDIA RAG Blueprint `v2.4.0`** (Helm chart `nvidia-blueprint-rag`)
   - [Deployment Guide](https://github.com/NVIDIA-AI-Blueprints/rag/blob/main/docs/deploy-docker-self-hosted.md)
   - Backend-specific documentation: `sources/knowledge_layer/src/foundational_rag/README.md`
+- **`azure_ai_search`** - Stores client-generated embeddings in namespaced Azure AI Search indexes and supports
+  vector, hybrid, and semantic-ranked retrieval.
 
 ---
 
@@ -70,6 +73,7 @@ export NVIDIA_API_KEY=nvapi-your-key-here
 # 2. Install backend (choose one)
 uv pip install -e "sources/knowledge_layer[llamaindex]"        # Recommended for local dev - works on macOS/Linux
 uv pip install -e "sources/knowledge_layer[foundational_rag]"  # Requires deployed server
+uv pip install -e "sources/knowledge_layer[azure_ai_search]"   # Requires an Azure AI Search service
 ```
 
 > **New to Knowledge Layer?** Start with `llamaindex` - it requires no external services and works on macOS and Linux.
@@ -152,6 +156,31 @@ functions:
     timeout: 120
 ```
 
+**Azure AI Search (Managed Service)**
+```yaml
+functions:
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: azure_ai_search
+    collection_name: my_docs
+    use_hybrid: true
+    use_semantic_ranker: true
+```
+
+Set `AZURE_SEARCH_ENDPOINT` and `NVIDIA_API_KEY` in the environment. Setting
+`AZURE_SEARCH_API_KEY` selects key authentication; otherwise Azure
+`DefaultAzureCredential` is used. Embedding defaults can be shared with the
+LlamaIndex backend through `AIQ_EMBED_BASE_URL` and `AIQ_EMBED_MODEL`; set
+`AIQ_EMBED_DIM` when changing the model dimensions.
+
+Azure maps logical collection names to collision-safe physical indexes under `azure_search_index_prefix`. Only
+indexes containing an AI-Q ownership and schema marker are listed, queried, or deleted. Legacy indexes named directly
+after collections are ignored; re-ingest those collections after enabling this backend.
+
+Upload responses return canonical UUID file IDs. Re-uploading the same filename writes and verifies the new generation
+before removing the old generation. Collection cleanup uses `AIQ_COLLECTION_TTL_HOURS` (24 hours by default) and
+`AIQ_TTL_CLEANUP_INTERVAL_SECONDS` (one hour by default), matching the other knowledge backends.
+
 #### Multimodal Extraction (LlamaIndex Only)
 
 By default, LlamaIndex ingests text only and uses the NVIDIA hosted embedding models. When `AIQ_EXTRACT_IMAGES` or `AIQ_EXTRACT_CHARTS` is enabled, a Vision Language Model (VLM) is used during ingestion to caption embedded images and extract structured data from charts (axis labels, data points, chart type). This makes visual content in PDFs searchable and retrievable alongside text. The VLM is only invoked at ingestion time, not at query time.
@@ -212,10 +241,13 @@ File type support depends on the configured backend:
 |---------|----------------|
 | **LlamaIndex** | PDF, DOCX, TXT, MD, HTML, JSON, CSV |
 | **Foundational RAG** | PDF, DOCX, PPTX, TXT, MD, HTML, images (PNG, JPG) |
+| **Azure AI Search** | PDF, DOCX, TXT, MD |
 
 For custom backends, supported types are determined by the backend implementation.
 
-> **Note:** The backends support more types than the frontend currently allows. The frontend only supports uploading `.pdf,.docx,.txt,.md` (the common subset across both backends). Types like HTML, JSON, CSV, and images are supported by the backends but the frontend upload flow does not handle them yet -- this is a separate task.
+> **Note:** The backends support more types than the frontend currently allows. The frontend only supports uploading
+> `.pdf,.docx,.txt,.md` (the common subset across all backends). Types like HTML, JSON, CSV, and images are supported by
+> some backends but the frontend upload flow does not handle them yet -- this is a separate task.
 
 To change the accepted types in the frontend, set `FILE_UPLOAD_ACCEPTED_TYPES` for your deployment method:
 
@@ -396,6 +428,8 @@ Configuration values are resolved in the following order (highest to lowest prio
 | `KNOWLEDGE_RETRIEVER_BACKEND` | All | Default retriever backend (fallback if not in YAML) |
 | `KNOWLEDGE_INGESTOR_BACKEND` | All | Default ingestor backend (fallback if not in YAML) |
 | `AIQ_CHROMA_DIR` | llamaindex | ChromaDB persistence path |
+| `AIQ_COLLECTION_TTL_HOURS` | all local/managed backends | Hours before stale collections are deleted (default: 24) |
+| `AIQ_TTL_CLEANUP_INTERVAL_SECONDS` | all local/managed backends | Collection cleanup interval (default: 3600) |
 | `RAG_SERVER_URL` | foundational_rag | Query server URL (port 8081) |
 | `RAG_INGEST_URL` | foundational_rag | Ingestion server URL (port 8082) |
 | `COLLECTION_NAME` | All | Default collection name |

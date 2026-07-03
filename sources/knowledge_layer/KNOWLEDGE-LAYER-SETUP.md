@@ -43,6 +43,9 @@ A pluggable abstraction for document ingestion and retrieval. Swap backends with
 **Hosted Service Mode** - Connects to deployed services via HTTP. Requires infrastructure but scales better.
 - **`foundational_rag`** - Connects to [NVIDIA RAG Blueprint](https://github.com/NVIDIA-AI-Blueprints/rag) via HTTP.
   - [Deployment Guide](https://github.com/NVIDIA-AI-Blueprints/rag/blob/main/docs/deploy-docker-self-hosted.md)
+- **`azure_ai_search`** - Uses AI-Q-owned, collision-safe indexes in a managed Azure AI Search service. Canonical
+  UUID file IDs support status and deletion, while same-name uploads replace the prior generation after successful
+  indexing. See [`src/azure_ai_search/README.md`](src/azure_ai_search/README.md).
 
 ---
 
@@ -852,6 +855,12 @@ Configuration values are resolved in the following order (highest to lowest prio
 | `KNOWLEDGE_RETRIEVER_BACKEND` | All | Default retriever backend (fallback if not in YAML) |
 | `KNOWLEDGE_INGESTOR_BACKEND` | All | Default ingestor backend (fallback if not in YAML) |
 | `AIQ_CHROMA_DIR` | llamaindex | ChromaDB persistence path |
+| `AZURE_SEARCH_ENDPOINT` | azure_ai_search | Azure AI Search service endpoint |
+| `AZURE_SEARCH_API_KEY` | azure_ai_search | Optional admin key; omit to use `DefaultAzureCredential` |
+| `AIQ_AZURE_SEARCH_INDEX_PREFIX` | azure_ai_search | Prefix for AI-Q-owned indexes (default: `aiq`) |
+| `AIQ_EMBED_MODEL` | llamaindex, azure_ai_search | Embedding model name |
+| `AIQ_EMBED_BASE_URL` | llamaindex, azure_ai_search | Embedding API base URL |
+| `AIQ_EMBED_DIM` | azure_ai_search | Embedding dimensions (default: `4096`) |
 | `AIQ_SUMMARY_DB` | All | Summary database URL (SQLite or PostgreSQL) |
 | `RAG_SERVER_URL` | foundational_rag | Query server URL (port 8081) |
 | `RAG_INGEST_URL` | foundational_rag | Ingestion server URL (port 8082) |

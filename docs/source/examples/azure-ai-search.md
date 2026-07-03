@@ -16,6 +16,15 @@ Install the backend dependency:
 uv pip install -e "sources/knowledge_layer[azure_ai_search]"
 ```
 
+Set the environment used by the adapter:
+
+```bash
+export AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+export NVIDIA_API_KEY=<embedding-api-key>
+# Optional; omit to use DefaultAzureCredential.
+export AZURE_SEARCH_API_KEY=<search-admin-key>
+```
+
 Replace the `knowledge_search` block in a web configuration such as
 `configs/config_web_default_llamaindex.yml`:
 
@@ -26,13 +35,6 @@ functions:
     backend: azure_ai_search
     collection_name: ${COLLECTION_NAME:-aiq_default}
     top_k: 5
-
-    azure_search_endpoint: https://<service>.search.windows.net
-    azure_search_auth_mode: managed_identity
-
-    embed_endpoint: https://integrate.api.nvidia.com/v1
-    embed_model: nvidia/nv-embed-v1
-    embed_dim: 4096
     use_hybrid: true
     use_semantic_ranker: true
 
@@ -41,13 +43,21 @@ functions:
     summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./summaries.db}
 ```
 
-For API-key authentication, set `azure_search_auth_mode: api_key` and add
-`azure_search_api_key: ${AZURE_SEARCH_API_KEY}`. Managed identity uses
-`DefaultAzureCredential`; set `AZURE_CLIENT_ID` to select a user-assigned
-identity. If `embed_api_key` is omitted, the NVIDIA embedding client reads
-`NVIDIA_API_KEY`.
+Explicit YAML options override environment defaults. `AZURE_SEARCH_API_KEY`
+selects API-key authentication when present; otherwise the adapter uses
+`DefaultAzureCredential`. Set `AZURE_CLIENT_ID` to select a user-assigned
+identity. Embeddings share `AIQ_EMBED_BASE_URL`, `AIQ_EMBED_MODEL`, and
+`NVIDIA_API_KEY` with the LlamaIndex backend. Azure-specific optional settings
+are `AIQ_EMBED_DIM` and `AIQ_AZURE_SEARCH_INDEX_PREFIX`.
 
 Existing indexes must use the configured `embed_dim`. Delete and re-ingest a
 collection when changing embedding dimensions. Frontend WebSocket queries use
 the conversation ID as the collection; direct API tests must supply equivalent
 context or query the configured fallback collection.
+
+The backend only lists or mutates indexes carrying its AI-Q ownership marker.
+Logical collection names map to collision-safe physical names under
+`azure_search_index_prefix`; un-namespaced indexes from earlier versions are
+ignored and must be re-ingested. File IDs returned by upload are authoritative
+for status and delete operations. Same-name uploads replace the prior file only
+after the new generation has been fully indexed.

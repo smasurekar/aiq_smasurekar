@@ -39,6 +39,16 @@ from nat.data_models.function import FunctionBaseConfig
 logger = logging.getLogger(__name__)
 
 
+def _url_from_env(name: str, default: str | None = None) -> HttpUrl | None:
+    value = os.environ.get(name, default)
+    return HttpUrl(value) if value else None
+
+
+def _secret_from_env(name: str) -> SecretStr | None:
+    value = os.environ.get(name)
+    return SecretStr(value) if value else None
+
+
 # Type-safe backend selection - Pydantic validates at config load time
 BackendType = Literal["llamaindex", "foundational_rag", "azure_ai_search"]
 
@@ -76,29 +86,34 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
     )
     # Azure AI Search options
     azure_search_endpoint: HttpUrl | None = Field(
-        default=None,
-        description="Azure AI Search service URL (azure_ai_search only)",
+        default_factory=lambda: _url_from_env("AZURE_SEARCH_ENDPOINT"),
+        description="Azure AI Search service URL; defaults to AZURE_SEARCH_ENDPOINT",
     )
     azure_search_api_key: SecretStr | None = Field(
-        default=None,
-        description="Optional Azure AI Search admin key; managed identity is used when omitted",
+        default_factory=lambda: _secret_from_env("AZURE_SEARCH_API_KEY"),
+        description="Optional Azure AI Search admin key; defaults to AZURE_SEARCH_API_KEY",
     )
     azure_search_auth_mode: Literal["managed_identity", "api_key"] = Field(
-        default="managed_identity",
-        description="Authentication mode for Azure AI Search",
+        default_factory=lambda: "api_key" if os.environ.get("AZURE_SEARCH_API_KEY") else "managed_identity",
+        description="Authentication mode; defaults to API key when AZURE_SEARCH_API_KEY is set",
+    )
+    azure_search_index_prefix: str = Field(
+        default_factory=lambda: os.environ.get("AIQ_AZURE_SEARCH_INDEX_PREFIX", "aiq"),
+        min_length=1,
+        description="Prefix for AI-Q-owned indexes; defaults to AIQ_AZURE_SEARCH_INDEX_PREFIX or aiq",
     )
     embed_endpoint: HttpUrl = Field(
-        default=HttpUrl("https://integrate.api.nvidia.com/v1"),
-        description="OpenAI-compatible embedding endpoint (azure_ai_search only)",
+        default_factory=lambda: _url_from_env("AIQ_EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+        description="Embedding endpoint; defaults to AIQ_EMBED_BASE_URL",
     )
     embed_model: str = Field(
-        default="nvidia/nv-embed-v1",
-        description="Embedding model name (azure_ai_search only)",
+        default_factory=lambda: os.environ.get("AIQ_EMBED_MODEL", "nvidia/nv-embed-v1"),
+        description="Embedding model; defaults to AIQ_EMBED_MODEL",
     )
     embed_dim: int = Field(
-        default=4096,
+        default_factory=lambda: int(os.environ.get("AIQ_EMBED_DIM", "4096")),
         gt=0,
-        description="Embedding dimensions; must match existing Azure AI Search indexes",
+        description="Embedding dimensions; defaults to AIQ_EMBED_DIM and must match existing indexes",
     )
     embed_api_key: SecretStr | None = Field(
         default=None,
@@ -147,6 +162,8 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
                 raise ValueError("azure_search_auth_mode=api_key requires azure_search_api_key")
             if self.chunk_overlap >= self.chunk_size:
                 raise ValueError("chunk_overlap must be smaller than chunk_size")
+            if not self.use_hybrid and self.use_semantic_ranker:
+                raise ValueError("use_semantic_ranker=true requires use_hybrid=true")
 
         return self
 
@@ -200,6 +217,7 @@ def _setup_backend(config: KnowledgeRetrievalConfig, summary_llm_obj=None) -> tu
             "endpoint": str(config.azure_search_endpoint),
             "api_key": config.azure_search_api_key,
             "auth_mode": config.azure_search_auth_mode,
+            "index_prefix": config.azure_search_index_prefix,
             "embed_endpoint": str(config.embed_endpoint),
             "embed_model": config.embed_model,
             "embed_dim": config.embed_dim,

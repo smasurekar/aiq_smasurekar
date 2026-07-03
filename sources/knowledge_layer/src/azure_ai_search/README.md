@@ -17,25 +17,21 @@ uv pip install -e "sources/knowledge_layer[azure_ai_search]"
 
 ## Configure
 
+Set service and model credentials in the environment:
+
+```bash
+export AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+export NVIDIA_API_KEY=<embedding-api-key>
+# Optional: setting this selects API-key auth instead of DefaultAzureCredential.
+export AZURE_SEARCH_API_KEY=<search-admin-key>
+```
+
 ```yaml
 functions:
   knowledge_search:
     _type: knowledge_retrieval
     backend: azure_ai_search
     collection_name: ${COLLECTION_NAME:-aiq_default}
-
-    azure_search_endpoint: https://<service>.search.windows.net
-    azure_search_auth_mode: managed_identity
-    # For key authentication instead:
-    # azure_search_auth_mode: api_key
-    # azure_search_api_key: ${AZURE_SEARCH_API_KEY}
-
-    embed_endpoint: https://integrate.api.nvidia.com/v1
-    embed_model: nvidia/nv-embed-v1
-    embed_dim: 4096
-    # NVIDIAEmbedding reads NVIDIA_API_KEY when this field is omitted.
-    # embed_api_key: ${NVIDIA_API_KEY}
-
     use_hybrid: true
     use_semantic_ranker: true
     top_k: 5
@@ -47,20 +43,42 @@ functions:
     summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./summaries.db}
 ```
 
-Managed identity uses `DefaultAzureCredential`. Set `AZURE_CLIENT_ID` when a
-user-assigned identity should be selected. The identity needs permission to
-create and delete indexes and to read, write, and delete index documents.
+Explicit YAML values still override the environment-backed defaults. Azure
+Search uses `AZURE_SEARCH_ENDPOINT` and optional `AZURE_SEARCH_API_KEY`.
+Embedding configuration shares `AIQ_EMBED_BASE_URL`, `AIQ_EMBED_MODEL`, and
+`NVIDIA_API_KEY` with the LlamaIndex backend; Azure additionally accepts
+`AIQ_EMBED_DIM` and `AIQ_AZURE_SEARCH_INDEX_PREFIX`.
+
+When `AZURE_SEARCH_API_KEY` is absent, the adapter uses
+`DefaultAzureCredential`. Set `AZURE_CLIENT_ID` when a user-assigned identity
+should be selected. The identity needs permission to create and delete indexes
+and to read, write, and delete index documents.
 
 The adapter parses PDF, DOCX, TXT, and Markdown uploads with LlamaIndex,
-creates one Azure AI Search index per AI-Q collection, and performs vector or
-hybrid retrieval with optional semantic ranking. AI-Q frontend conversations
-use their conversation ID as the collection name, keeping uploads and
-WebSocket retrieval in the same index.
+creates one namespaced Azure AI Search index per AI-Q collection, and performs
+vector or hybrid retrieval with optional semantic ranking. Logical collection
+names are sanitized and combined with a stable hash, preventing collisions and
+protecting unrelated indexes in a shared service. Only indexes containing the
+AI-Q ownership/schema marker are visible or mutable through this backend.
+
+Upload responses return canonical UUID file IDs used by job progress, list,
+status, and delete operations. Re-uploading the same filename writes and
+verifies a new generation before deleting old chunks. Upload and delete
+requests stay below Azure's 1,000-action and 16 MiB limits, and every
+per-document result is checked.
+
+Collections use the shared Knowledge Layer TTL settings:
+`AIQ_COLLECTION_TTL_HOURS` defaults to 24 hours and
+`AIQ_TTL_CLEANUP_INTERVAL_SECONDS` defaults to 3600 seconds. Successful file
+and collection deletion also clears corresponding summary records.
 
 `embed_dim` must match both the embedding model output and any existing index.
 Changing from a 2048-dimensional model to `nvidia/nv-embed-v1` at 4096
 dimensions requires deleting and re-ingesting the old collection. The adapter
-does not alter an existing index schema.
+validates ownership, fields, vector profile, dimensions, and semantic
+configuration before use; it does not alter an incompatible schema. Indexes
+created by the earlier un-namespaced implementation are deliberately ignored,
+so re-ingest those collections.
 
 For direct API tests, use the same collection or conversation context used for
 upload. A standalone chat request without that context falls back to the
