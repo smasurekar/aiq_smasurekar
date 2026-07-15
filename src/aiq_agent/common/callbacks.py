@@ -165,7 +165,7 @@ class VerboseTraceCallback(BaseCallbackHandler):
         logger.info("%s[AGENT]%s %s", BOLD, RESET_ALL, model_name)
         if self.current_input:
             preview = self.current_input[:200] + "..." if len(self.current_input) > 200 else self.current_input
-            logger.info("%sAgent input: %s%s", YELLOW, preview, RESET)
+            logger.info("%sAgent input Preview: %s%s", YELLOW, preview, RESET)
 
     def on_llm_end(self, response: LLMResult, **kwargs) -> None:
         if not response.generations:

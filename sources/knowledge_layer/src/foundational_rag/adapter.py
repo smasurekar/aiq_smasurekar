@@ -337,6 +337,7 @@ class FoundationalRagRetriever(BaseRetriever):
                 "reranker_top_k": top_k,  # Final number of results after reranking
                 "vdb_top_k": min(top_k * VDB_TOP_K_MULTIPLIER, MAX_VDB_TOP_K),
                 "enable_reranker": True,  # Enable reranking for better results
+                "enable_citations": False, # Disable citations to avoid bloating the response
             }
 
             # Add filter expression if provided
