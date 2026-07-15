@@ -558,7 +558,7 @@ def _format_results(retrieval_result, query: str) -> str:
         lines.append("")
 
         # Content (truncate if very long)
-        content = chunk.content
+        content = chunk.metadata.get("source_metadata", {}).get("description", "EMPTY")
         if len(content) > 1500:
             content = content[:1500] + "... [truncated]"
         lines.append(content)

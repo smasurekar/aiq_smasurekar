@@ -13,18 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agents for the AI-Q Blueprint."""
+"""State model for the adaptive research agent.
 
-from .adaptive_researcher import adaptive_research_agent
-from .chat_researcher import chat_deepresearcher_agent
-from .data_science import data_science_agent
-from .deep_researcher import deep_research_agent
-from .shallow_researcher import shallow_research_agent
+The adaptive researcher shares the deep researcher's state shape exactly for the first
+iteration; it is subclassed here only to give the adaptive agent a distinct type name and a
+future extension point (e.g. an effort/tier trace field). No new required fields are added,
+so the deep-research runtime, tools, and middleware all operate on it unchanged.
+"""
 
-__all__ = [
-    "adaptive_research_agent",
-    "chat_deepresearcher_agent",
-    "data_science_agent",
-    "shallow_research_agent",
-    "deep_research_agent",
-]
+from aiq_agent.agents.deep_researcher.models.state import DeepResearchAgentState
+
+
+class AdaptiveResearchAgentState(DeepResearchAgentState):
+    """State for the adaptive research agent (identical shape to deep research for iteration 1)."""

@@ -115,6 +115,7 @@ installer-sha256 = "c15d6cb8090e1c7c8d79a320b5bcbdaf1c15c2363942d81e84b56e03b836
 aiq_chat_researcher = "aiq_agent.agents.chat_researcher.register"
 aiq_shallow_researcher = "aiq_agent.agents.shallow_researcher.register"
 aiq_deep_researcher = "aiq_agent.agents.deep_researcher.register"
+aiq_adaptive_researcher = "aiq_agent.agents.adaptive_researcher.register"
 aiq_fastapi_extensions = "aiq_agent.fastapi_extensions.register"
 aiq_clarifier = "aiq_agent.agents.clarifier.register"
 aiq_data_science = "aiq_agent.agents.data_science.register"
