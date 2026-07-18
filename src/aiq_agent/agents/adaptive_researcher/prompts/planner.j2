@@ -101,6 +101,7 @@ Query Guidelines:
 - Prefer more focused, independent ResearchQuery objects over large umbrella queries with many subqueries; `run_research_batch` is designed to run independent queries concurrently.
 - `preferred_tools` MUST contain ordered exact names of available search/source tools listed below. The first item is the primary tool the researcher should use first. Do not use category labels like `external`, `internal`, `web`, `search`, or `paper`.
 - `fallback_tools` should contain ordered exact available source tool names for corroboration or gaps; leave it empty only when no fallback is useful.
+- Set a `depth` on each ResearchQuery to steer how much the researcher iterates on it (independent of how many queries you emit): `high` for a multi-hop query that needs chained reasoning (resolve one fact, then use it to find the next); `low` for a simple, self-contained lookup; `medium` otherwise. Prefer one `depth: "high"` query over many parallel queries when the need is depth, not breadth.
 {% if enable_source_router %}
 - If `/shared/source_routing.json` exists, copy all highest-priority routed recommendations' exact `tool_names` into `preferred_tools` for relevant final ResearchQuery objects unless your planning searches proved them irrelevant; if you skip them, explain why in a query rationale or constraint.
 {% endif %}
