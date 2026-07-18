@@ -34,9 +34,13 @@ from aiq_agent.agents.deep_researcher.models import SourceRoutingPlan
 from aiq_agent.agents.deep_researcher.models import TaskAnalysis
 
 from .state import AdaptiveResearchAgentState
+from .subagent_contracts import AdaptiveResearchPlan
+from .subagent_contracts import AdaptiveResearchQuery
 
 __all__ = [
     "AdaptiveResearchAgentState",
+    "AdaptiveResearchPlan",
+    "AdaptiveResearchQuery",
     "AnswerComponent",
     "AnswerStrategy",
     "Constraint",

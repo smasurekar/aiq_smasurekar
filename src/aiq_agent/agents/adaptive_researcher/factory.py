@@ -47,6 +47,7 @@ from aiq_agent.agents.deep_researcher.custom_middleware import ToolResultPruning
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepAgentsRuntime
 from aiq_agent.agents.deep_researcher.factory import FILESYSTEM_TOOL_NAMES
 from aiq_agent.agents.deep_researcher.factory import ORCHESTRATOR_AGENT
+from aiq_agent.agents.deep_researcher.factory import PLANNER_AGENT
 from aiq_agent.agents.deep_researcher.factory import RESEARCHER_AGENT
 from aiq_agent.agents.deep_researcher.factory import DeepResearchGraphContext
 from aiq_agent.agents.deep_researcher.factory import DeepResearchMiddlewareSet
@@ -56,12 +57,13 @@ from aiq_agent.agents.deep_researcher.factory import build_deep_research_subagen
 from aiq_agent.agents.deep_researcher.factory import build_deep_research_tool_set
 from aiq_agent.agents.deep_researcher.factory import build_researcher_runnable
 from aiq_agent.agents.deep_researcher.factory import runtime_visibility_middleware
-from aiq_agent.agents.deep_researcher.tools.research import build_research_batch_tool
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
 from .custom_middleware import ComplexityRouterMiddleware
 from .models import AdaptiveResearchAgentState
+from .models import AdaptiveResearchPlan
+from .tools.research import build_adaptive_research_batch_tool
 from .tiers import enabled_tier_profiles
 from .tools.finalize import build_declare_effort_tier_tool
 from .tools.finalize import build_submit_final_report_tool
@@ -203,7 +205,7 @@ def build_adaptive_research_graph(
         visibility_middleware=context.visibility_middleware,
         filesystem_permissions=context.permissions(RESEARCHER_AGENT),
     )
-    research_batch_tool = build_research_batch_tool(
+    research_batch_tool = build_adaptive_research_batch_tool(
         researcher_runnable=researcher_runnable,
         backend=context.backend,
         callbacks=callbacks,
@@ -219,6 +221,14 @@ def build_adaptive_research_graph(
         declare_effort_tier_tool,
         submit_final_report_tool,
     ]
+
+    # Reuse the deep researcher's subagent specs, but retype the planner's structured output to
+    # AdaptiveResearchPlan so planner-authored queries carry the per-query `depth` hint into
+    # /shared/plan.json (the deep/standard-writer path).
+    subagents = build_deep_research_subagents(context)
+    for spec in subagents:
+        if spec["name"] == PLANNER_AGENT:
+            spec["response_format"] = AdaptiveResearchPlan
 
     orchestrator_middleware = context.middleware(context.middleware_set.orchestrator)
     if enforce_tier_tools:
@@ -255,7 +265,7 @@ def build_adaptive_research_graph(
             tier_profiles=enabled_tier_profiles(enabled_tiers),
             triage_hint="",
         ),
-        subagents=build_deep_research_subagents(context),
+        subagents=subagents,
         store=InMemoryStore(),
         middleware=orchestrator_middleware,
         permissions=context.permissions(ORCHESTRATOR_AGENT),

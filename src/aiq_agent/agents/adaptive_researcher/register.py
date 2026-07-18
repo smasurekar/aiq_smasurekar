@@ -307,7 +307,10 @@ class AdaptiveResearchWorkflowConfig(FunctionBaseConfig, name="adaptive_research
     as the top-level workflow to run the unified agent directly with no upstream classifier.
     """
 
-    pass
+    use_async_deep_research: bool = Field(
+        default=False,
+        description="Submit deep research as an async job instead of running inline",
+    )
 
 
 @register_function(config_type=AdaptiveResearchWorkflowConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
