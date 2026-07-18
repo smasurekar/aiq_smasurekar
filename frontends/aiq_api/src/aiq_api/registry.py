@@ -118,6 +118,13 @@ register_agent(
 )
 
 register_agent(
+    agent_type="adaptive_researcher",
+    class_path="aiq_agent.agents.adaptive_researcher.agent.AdaptiveResearcherAgent",
+    config_name="adaptive_research_agent",
+    description="Single graph with model-selected effort tier per request",
+)
+
+register_agent(
     agent_type="report_rewriter",
     class_path="aiq_agent.agents.report_rewriter.agent.ReportRewriterAgent",
     config_name="deep_research_agent",

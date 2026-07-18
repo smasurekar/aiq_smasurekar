@@ -63,6 +63,7 @@ _DEEP_RESEARCH_AGENT_KWARGS = frozenset(
         "resource_limits",
     }
 )
+_ADAPTIVE_RESEARCH_AGENT_KWARGS = _DEEP_RESEARCH_AGENT_KWARGS | {"enabled_tiers", "enforce_tier_tools"}
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
 _JOB_SCOPED_AGENT_KWARGS = frozenset({"job_id"})
 
@@ -796,13 +797,14 @@ async def run_agent_job(
             await _attach_middleware_to_function(builder, config, agent_config_name)
 
             fn_config = builder.get_function_config(agent_config_name)
-            if getattr(fn_config, "type", None) == "deep_research_agent":
-                from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
+            if getattr(fn_config, "type", None) in ("deep_research_agent", "adaptive_research_agent"):
                 from aiq_agent.agents.deep_researcher.register import resolve_deep_research_runtime_config
 
-                if isinstance(fn_config, DeepResearchAgentConfig):
-                    skills_config, sandbox_config = resolve_deep_research_runtime_config(fn_config, builder)
-                    fn_config = fn_config.model_copy(update={"skills": skills_config, "sandbox": sandbox_config})
+                # Both the deep and adaptive research configs carry optional skills/sandbox
+                # refs that resolve_deep_research_runtime_config reads by attribute, so the
+                # same resolution applies to either config type.
+                skills_config, sandbox_config = resolve_deep_research_runtime_config(fn_config, builder)
+                fn_config = fn_config.model_copy(update={"skills": skills_config, "sandbox": sandbox_config})
 
             provider, llm = await _create_llm_provider(builder, fn_config)
 
@@ -1246,7 +1248,31 @@ def _create_agent_instance(
     4. llm_provider + tools pattern
     5. llm + tools pattern (simpler agents)
     """
+    from aiq_agent.agents.adaptive_researcher.register import AdaptiveResearchAgentConfig
     from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
+
+    if isinstance(fn_config, AdaptiveResearchAgentConfig) and _constructor_accepts_explicit_kwargs(
+        agent_cls, _ADAPTIVE_RESEARCH_AGENT_KWARGS
+    ):
+        return agent_cls(
+            llm_provider=llm_provider,
+            tools=tools,
+            verbose=verbose,
+            callbacks=callbacks,
+            domain_catalog_path=fn_config.domain_catalog_path,
+            enable_source_router=fn_config.enable_source_router,
+            enable_citation_verification=fn_config.enable_citation_verification,
+            enabled_tiers=fn_config.enabled_tiers,
+            enforce_tier_tools=fn_config.enforce_tier_tools,
+            skills=fn_config.skills,
+            sandbox=fn_config.sandbox,
+            job_id=job_id,
+            artifact_db_url=artifact_db_url,
+            artifact_emit=artifact_emit,
+            max_research_concurrency=fn_config.max_research_concurrency,
+            max_concurrent_source_tool_calls=fn_config.max_concurrent_source_tool_calls,
+            max_source_tool_batch_size=fn_config.max_source_tool_batch_size,
+        )
 
     if isinstance(fn_config, DeepResearchAgentConfig) and _constructor_accepts_explicit_kwargs(
         agent_cls, _DEEP_RESEARCH_AGENT_KWARGS
