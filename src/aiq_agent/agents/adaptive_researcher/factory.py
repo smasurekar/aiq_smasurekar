@@ -61,12 +61,13 @@ from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
 from .custom_middleware import ComplexityRouterMiddleware
+from .custom_middleware import ConsecutiveThinkGuardMiddleware
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
-from .tools.research import build_adaptive_research_batch_tool
 from .tiers import enabled_tier_profiles
 from .tools.finalize import build_declare_effort_tier_tool
 from .tools.finalize import build_submit_final_report_tool
+from .tools.research import build_adaptive_research_batch_tool
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ def build_adaptive_orchestrator_middleware(
     source_registry_middleware: SourceRegistryMiddleware,
     research_batch_tool_name: str = "run_research_batch",
     finalize_tool_name: str = FINALIZE_TOOL_NAME,
+    direct_source_tool_names: frozenset[str] | set[str] = frozenset(),
 ) -> list[Any]:
     """Middleware for the adaptive orchestrator.
 
@@ -94,12 +96,17 @@ def build_adaptive_orchestrator_middleware(
       design source-routing is advisory/optional (and skipped entirely on shallow paths), so
       the guard would deadlock the single-shot path.
     - ``submit_final_report`` is added to the tool-name sanitizer allowlist.
+
+    When ``direct_source_tool_names`` is provided (i.e. ``single_loop_single_shot=True``),
+    those names are added to the sanitizer allowlist so the orchestrator can call source tools
+    directly on the ``single_shot`` inline path without triggering name-sanitization errors.
     """
     valid_tool_names = {tool.name for tool in tool_set.helper_tools}
     valid_tool_names.add(research_batch_tool_name)
     valid_tool_names.add(finalize_tool_name)
     valid_tool_names.add(DECLARE_TIER_TOOL_NAME)
     valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
+    valid_tool_names.update(direct_source_tool_names)
     return [
         EmptyContentFixMiddleware(),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(valid_tool_names)),
@@ -107,6 +114,7 @@ def build_adaptive_orchestrator_middleware(
         source_registry_middleware,
         ToolResultPruningMiddleware(keep_last_n=10, max_chars=2000),
         ModelRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+        ConsecutiveThinkGuardMiddleware(),
     ]
 
 
@@ -116,6 +124,7 @@ def build_adaptive_research_middleware_set(
     source_registry_middleware: SourceRegistryMiddleware,
     enable_source_router: bool = False,
     artifact_manager: object | None = None,
+    direct_source_tool_names: frozenset[str] | set[str] = frozenset(),
 ) -> DeepResearchMiddlewareSet:
     """Build researcher, planner, writer, and (guard-free) orchestrator middleware stacks."""
 
@@ -128,12 +137,13 @@ def build_adaptive_research_middleware_set(
         )
 
     return DeepResearchMiddlewareSet(
-        researcher=common(),
-        planner=common(),
-        writer=common(),
+        researcher=[*common(), ConsecutiveThinkGuardMiddleware()],
+        planner=[*common(), ConsecutiveThinkGuardMiddleware()],
+        writer=[*common(), ConsecutiveThinkGuardMiddleware()],
         orchestrator=build_adaptive_orchestrator_middleware(
             tool_set=tool_set,
             source_registry_middleware=source_registry_middleware,
+            direct_source_tool_names=direct_source_tool_names,
         ),
     )
 
@@ -154,12 +164,20 @@ def build_adaptive_research_graph(
     enabled_tiers: list[str],
     enforce_tier_tools: bool = False,
     enable_source_router: bool = False,
+    single_loop_single_shot: bool = False,
 ) -> Any:
     """Build the full DeepAgents graph for one adaptive research run.
 
     Mirrors ``deep_researcher.build_deep_research_graph`` with the adaptive divergences: the
     orchestrator carries ``submit_final_report``; its prompt is rendered with the enabled effort
-    tiers; and (only when ``enforce_tier_tools``) ``ComplexityRouterMiddleware`` is appended.
+    tiers; and (only when ``enforce_tier_tools`` or ``single_loop_single_shot``)
+    ``ComplexityRouterMiddleware`` is appended.
+
+    When ``single_loop_single_shot=True``, the research source tools are also wired into the
+    orchestrator's ToolNode so they can be executed directly (without going through the
+    researcher subagent) when the declared effort tier is ``single_shot``.  The
+    ``ComplexityRouterMiddleware`` hides them for all other tiers so the orchestrator cannot
+    call them accidentally on ``standard`` or ``deep`` paths.
     """
     from aiq_agent.agents.deep_researcher.custom_middleware import ExecuteTimeoutClampMiddleware
     from aiq_agent.agents.deep_researcher.custom_middleware import FilesystemToolCallGuardMiddleware
@@ -215,11 +233,18 @@ def build_adaptive_research_graph(
     declare_effort_tier_tool = build_declare_effort_tier_tool(backend=context.backend)
     submit_final_report_tool = build_submit_final_report_tool(backend=context.backend)
 
+    # When single_loop_single_shot is enabled, wire source tools into the orchestrator's ToolNode
+    # so they can be executed directly on the single_shot inline path. ComplexityRouterMiddleware
+    # hides them from the model for all other tiers (standard/deep/direct).
+    direct_source_tools = list(context.tool_set.research_source_tools) if single_loop_single_shot else []
+    direct_source_tool_names: frozenset[str] = frozenset(t.name for t in direct_source_tools)
+
     orchestrator_tools = [
         *context.tool_set.helper_tools,
         research_batch_tool,
         declare_effort_tier_tool,
         submit_final_report_tool,
+        *direct_source_tools,
     ]
 
     # Reuse the deep researcher's subagent specs, but retype the planner's structured output to
@@ -231,7 +256,7 @@ def build_adaptive_research_graph(
             spec["response_format"] = AdaptiveResearchPlan
 
     orchestrator_middleware = context.middleware(context.middleware_set.orchestrator)
-    if enforce_tier_tools:
+    if enforce_tier_tools or single_loop_single_shot:
         orchestrator_middleware = [
             *orchestrator_middleware,
             ComplexityRouterMiddleware(
@@ -239,8 +264,19 @@ def build_adaptive_research_graph(
                 # Delta rewrites must retain planner/writer delegation even under a shallow-only
                 # normal-effort preset so preserved parent citations remain valid.
                 allow_delegation=context.parent_report_context_available,
+                direct_source_tools=direct_source_tools if single_loop_single_shot else None,
+                single_loop_single_shot=single_loop_single_shot,
             ),
         ]
+
+    # Build the callable-tools list for the prompt. Source tools are NOT listed here — they
+    # appear in "Retrieval Tools" and the single_shot section describes calling them directly.
+    # Listing them in "Your Tools" for non-single_shot tiers would invite accidental direct calls.
+    orchestrator_prompt_tools = [
+        {"name": t.name, "description": t.description}
+        for t in orchestrator_tools
+        if t.name not in direct_source_tool_names
+    ]
 
     agent = create_deep_agent(
         model=context.llm_provider.get(LLMRole.ORCHESTRATOR),
@@ -248,14 +284,12 @@ def build_adaptive_research_graph(
         system_prompt=context.render_prompt(
             "orchestrator",
             clarifier_result=context.state.clarifier_result,
-            # Advertise only the tools the orchestrator can actually call. Source tools live on
-            # the researcher and are reached via run_research_batch; listing them here would make
-            # the orchestrator call them directly, which the runtime rejects.
-            tools=[{"name": t.name, "description": t.description} for t in orchestrator_tools],
-            # Retrieval tools are NOT callable by the orchestrator (the researcher holds them),
-            # but the shallow/standard inline paths must name them in ResearchQuery.preferred_tools,
-            # so surface their names/descriptions. Per-request (varies with data_sources), hence
-            # rendered below the KV-cache boundary.
+            # Advertise only the non-source tools as callable. Source tools appear in
+            # "Retrieval Tools"; the single_shot section instructs calling them directly when
+            # single_loop_single_shot is active.
+            tools=orchestrator_prompt_tools,
+            # Retrieval tools are callable on the single_shot inline path when
+            # single_loop_single_shot=True; they remain reference-only on other tiers.
             retrieval_tools=context.tool_set.tools_info,
             enable_source_router=context.enable_source_router,
             max_research_concurrency=context.max_research_concurrency,
@@ -264,6 +298,7 @@ def build_adaptive_research_graph(
             enabled_tiers=enabled_tiers,
             tier_profiles=enabled_tier_profiles(enabled_tiers),
             triage_hint="",
+            single_loop_single_shot=single_loop_single_shot,
         ),
         subagents=subagents,
         store=InMemoryStore(),
