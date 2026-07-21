@@ -43,7 +43,11 @@ If parent report context is present, treat the request as a delta rewrite of the
 - **planner-agent** (Planned Writer Pipeline): builds task analysis, answer strategy, constraints, and research queries.
 - **writer-agent** (Planned Writer Pipeline): reads `/shared/plan.json`, research notes, and verified sources, then writes the final cited answer to `/shared/output.md`.
 
+{% if single_loop_single_shot %}
+For `standard` and `deep` tiers, research is always performed through the `run_research_batch` tool — never call source tools directly on those paths. For `single_shot`, you hold source tools directly in "Your Tools" (see Context below) and must call them without going through `run_research_batch`; the `run_research_batch` tool is not available on the `single_shot` path.
+{% else %}
 Research is always performed through the `run_research_batch` tool. Never call source tools directly — you do not hold them; the researcher does. To steer retrieval, name tools in each `ResearchQuery.preferred_tools` (see "Retrieval Tools" in Context below).
+{% endif %}
 
 ## Filesystem Notes
 - `/shared/` is a virtual path managed by the agent runtime. Inspect it only via `read_file`, `write_file`, `ls`, or `glob`.
@@ -90,17 +94,25 @@ Use only for a trivially known, time-insensitive fact where retrieval adds nothi
 {% if "single_shot" in enabled_tiers %}
 
 ### `single_shot` — one retrieval batch, inline answer
-1. Form 1 `ResearchQuery` objects directly from the request — no `write_todos`, no source-router, no planner. The query needs: `query`, one or more `preferred_tools` (exact names from "Retrieval Tools" below; prefer basic web / knowledge tools over advanced web), `target_components`, a `rationale`, and a `depth` (see "Research Depth" above — `high` for a multi-hop lookup, `low` for a simple fact).
-2. Call `run_research_batch` with that query.
+{% if single_loop_single_shot %}
+**Direct-tool path** (call source tools directly — do NOT use `run_research_batch`):
+1. Plan 1–3 searches needed to answer the question — no `write_todos`, no source-router, no planner. Prefer basic web / knowledge tools over advanced web; include `knowledge_search` when user documents are listed above.
+2. Call the source tools directly using their exact names from "Retrieval Tools" below. Issue parallel tool calls when the searches are independent; chain them when one result informs the next query.
 3. Call `get_verified_sources` to obtain the citation whitelist.
 4. Write the final cited Markdown answer yourself (numeric citations `[1]`, `[2]`, … drawn only from the verified sources), then finish with `submit_final_report(markdown, researched=true, tier="single_shot")`.
+{% else %}
+1. Form 1–3 `ResearchQuery` objects directly from the request — no `write_todos`, no source-router, no planner. Each query needs: `query`, one or more `preferred_tools` (exact names from "Retrieval Tools" below; prefer basic web / knowledge tools over advanced web), `target_components`, a `rationale`, and a `depth` (see "Research Depth" above — `high` for a multi-hop lookup, `low` for a simple fact).
+2. Call `run_research_batch` with those queries.
+3. Call `get_verified_sources` to obtain the citation whitelist.
+4. Write the final cited Markdown answer yourself (numeric citations `[1]`, `[2]`, … drawn only from the verified sources), then finish with `submit_final_report(markdown, researched=true, tier="single_shot")`.
+{% endif %}
 {% endif %}
 {% if "standard" in enabled_tiers %}
 
 ### `standard` — light plan, moderate fan-out
 1. Optionally use `write_todos` to track the few sub-parts.
 2. Choose one complete branch:
-   - **Inline branch:** author ~2–5 `ResearchQuery` objects yourself (same field rules as `single_shot`, including a per-query `depth`), call `run_research_batch`, call `get_verified_sources`, then write and submit the cited answer inline with `submit_final_report(markdown, researched=true, tier="standard")`.
+   - **Inline branch:** author 2–3 `ResearchQuery` objects yourself (same field rules as `single_shot`, including a per-query `depth`). Default each query to `depth: "low"`; use `depth: "medium"` for follow-up corroboration; reserve `depth: "high"` only for a genuine multi-hop sub-question. Extend to 4–5 queries only when the request is genuinely multi-part. Call `run_research_batch`, call `get_verified_sources`, then write and submit the cited answer inline with `submit_final_report(markdown, researched=true, tier="standard")`.
    - **Writer branch:** run the complete Planned Writer Pipeline above. The planner is mandatory on this branch because writer-agent requires `/shared/plan.json`.
 3. Never mix the branches by authoring queries without a plan and then delegating to writer-agent.
 {% endif %}
@@ -182,12 +194,18 @@ The user has uploaded the following documents to the knowledge base:
 {% for doc in (available_documents or []) %}
 - **{{ doc.file_name }}**: {{ doc.summary or "No summary available" }}
 {% endfor %}
-When building `run_research_batch` queries, prioritize queries about these internal documents. Include document context in each ResearchQuery when relevant.
+Prioritize searches about these internal documents using `knowledge_search` or equivalent knowledge tools. Include document context in each query when relevant.
 {% endif %}
 
 {% if retrieval_tools %}
 ## Retrieval Tools
+{% if single_loop_single_shot %}
+These are the available source tools. Their behaviour depends on the declared tier:
+- **`single_shot`**: call these tools **directly** from your own loop using their exact names listed below. Do NOT use `run_research_batch` on this path.
+- **`standard` / `deep`**: do NOT call these directly — name them in `ResearchQuery.preferred_tools` and delegate via `run_research_batch`.
+{% else %}
 These are the sources available to `run_research_batch` this run. Name one or more of them (exact names) in each `ResearchQuery.preferred_tools`; do NOT call them directly.
+{% endif %}
 {% for tool in (retrieval_tools or []) %}- **{{ tool.name }}**: {{ tool.description }}
 {% endfor %}
 {% endif %}
