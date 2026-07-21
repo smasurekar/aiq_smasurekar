@@ -116,6 +116,26 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "enforcement. Delegation remains available for mandatory parent-report delta rewrites."
         ),
     )
+    single_loop_single_shot: bool = Field(
+        default=False,
+        description=(
+            "Collapse the single_shot tier to a single-loop execution path: the orchestrator "
+            "calls source tools directly instead of delegating to a researcher subagent via "
+            "run_research_batch. Eliminates the second LLM loop for 1-3 query lookups, reducing "
+            "token usage toward the shallow_researcher band. ComplexityRouterMiddleware is "
+            "auto-enabled to hide source tools on standard/deep tiers. Off by default for "
+            "rollout safety; enable in config once A/B evals confirm single_shot parity."
+        ),
+    )
+    single_shot_researcher_llm: LLMRef | None = Field(
+        default=None,
+        description=(
+            "Optional LLM to use on the single_shot inline path (single_loop_single_shot=True). "
+            "Reserved for future dynamic model switching per declared tier; currently a no-op. "
+            "When set, allows operators to point the single_shot loop at a smaller/cheaper model "
+            "without affecting standard/deep tier quality."
+        ),
+    )
     skills: DeepResearchSkillsConfig | FunctionRef | None = Field(
         default=None,
         description="Optional inline skills config or function ref to a deep_research_skills config.",
@@ -217,6 +237,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         enable_citation_verification=config.enable_citation_verification,
         enabled_tiers=config.enabled_tiers,
         enforce_tier_tools=config.enforce_tier_tools,
+        single_loop_single_shot=config.single_loop_single_shot,
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
@@ -252,6 +273,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     enable_citation_verification=config.enable_citation_verification,
                     enabled_tiers=config.enabled_tiers,
                     enforce_tier_tools=config.enforce_tier_tools,
+                    single_loop_single_shot=config.single_loop_single_shot,
                     skills=skills_config,
                     sandbox=sandbox_config,
                     job_id=job_id,

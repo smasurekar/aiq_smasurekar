@@ -45,6 +45,21 @@ def test_config_reuses_deep_runtime_models():
     assert config.enabled_tiers == ["single_shot", "deep"]
 
 
+def test_single_loop_single_shot_defaults_false():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+    assert config.single_loop_single_shot is False
+
+
+def test_single_shot_researcher_llm_defaults_none():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+    assert config.single_shot_researcher_llm is None
+
+
+def test_single_loop_single_shot_can_be_enabled():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_loop_single_shot=True)
+    assert config.single_loop_single_shot is True
+
+
 @pytest.mark.asyncio
 async def test_workflow_wrapper_invokes_adaptive_agent_by_name():
     """The workflow wrapper looks up adaptive_research_agent by fixed name and wraps a string query."""

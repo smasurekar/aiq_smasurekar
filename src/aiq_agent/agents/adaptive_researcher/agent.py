@@ -90,6 +90,7 @@ class AdaptiveResearcherAgent:
         enable_citation_verification: bool = True,
         enabled_tiers: list[str] | None = None,
         enforce_tier_tools: bool = False,
+        single_loop_single_shot: bool = False,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
         job_id: str | None = None,
@@ -110,6 +111,9 @@ class AdaptiveResearcherAgent:
             domain_catalog_path: Optional YAML/JSON domain catalog path for source-router-agent.
             enable_source_router: Enable the advisory source-router-agent before planning.
             enable_citation_verification: Verify generated citations against the captured source registry.
+            enforce_tier_tools: Enable Layer-B ceiling-based tool hiding via ComplexityRouterMiddleware.
+            single_loop_single_shot: Collapse single_shot to a direct-tool single loop, bypassing
+                the researcher subagent. Requires enforce_tier_tools or auto-enables the middleware.
             skills: Optional DeepAgents skills config.
             sandbox: Optional DeepAgents sandbox config.
             job_id: Optional async job identifier used to scope sandbox backends.
@@ -130,6 +134,7 @@ class AdaptiveResearcherAgent:
         self.enable_citation_verification = enable_citation_verification
         self.enabled_tiers = list(enabled_tiers) if enabled_tiers else ["direct", "single_shot", "standard", "deep"]
         self.enforce_tier_tools = enforce_tier_tools
+        self.single_loop_single_shot = single_loop_single_shot
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -150,11 +155,17 @@ class AdaptiveResearcherAgent:
                 max_concurrent_source_tool_calls=self.max_concurrent_source_tool_calls,
                 max_source_tool_batch_size=self.max_source_tool_batch_size,
             )
+            direct_source_tool_names: frozenset[str] = (
+                frozenset(t.name for t in self.tool_set.research_source_tools)
+                if self.single_loop_single_shot
+                else frozenset()
+            )
             self.middleware_set = build_adaptive_research_middleware_set(
                 tool_set=self.tool_set,
                 source_registry_middleware=self.source_registry_middleware,
                 enable_source_router=self.enable_source_router,
                 artifact_manager=self.deepagents_runtime.artifact_manager,
+                direct_source_tool_names=direct_source_tool_names,
             )
 
             self.source_tool_names = self.tool_set.source_tool_names
@@ -212,6 +223,7 @@ class AdaptiveResearcherAgent:
             max_research_concurrency=self.max_research_concurrency,
             enabled_tiers=self.enabled_tiers,
             enforce_tier_tools=self.enforce_tier_tools,
+            single_loop_single_shot=self.single_loop_single_shot,
         )
 
     @staticmethod

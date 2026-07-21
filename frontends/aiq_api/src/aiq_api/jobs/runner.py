@@ -59,7 +59,11 @@ _DEEP_RESEARCH_AGENT_KWARGS = frozenset(
         "max_source_tool_batch_size",
     }
 )
-_ADAPTIVE_RESEARCH_AGENT_KWARGS = _DEEP_RESEARCH_AGENT_KWARGS | {"enabled_tiers", "enforce_tier_tools"}
+_ADAPTIVE_RESEARCH_AGENT_KWARGS = _DEEP_RESEARCH_AGENT_KWARGS | {
+    "enabled_tiers",
+    "enforce_tier_tools",
+    "single_loop_single_shot",
+}
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
 _JOB_SCOPED_AGENT_KWARGS = frozenset({"job_id"})
 
@@ -1012,6 +1016,7 @@ def _create_agent_instance(
             enable_citation_verification=fn_config.enable_citation_verification,
             enabled_tiers=fn_config.enabled_tiers,
             enforce_tier_tools=fn_config.enforce_tier_tools,
+            single_loop_single_shot=fn_config.single_loop_single_shot,
             skills=fn_config.skills,
             sandbox=fn_config.sandbox,
             job_id=job_id,
