@@ -24,6 +24,7 @@ import logging
 import re
 from typing import Any
 from typing import cast
+from uuid import uuid4
 
 from langchain.tools import ToolRuntime
 from langchain_core.messages import HumanMessage
@@ -32,6 +33,9 @@ from langchain_core.tools import tool
 
 from ..models import ResearchNotes
 from ..models import ResearchQuery
+from ..researcher_context import CURRENT_RESEARCHER_GUARD_STATE
+from ..researcher_context import ResearcherRunGuardState
+from ..researcher_context import normalize_research_depth
 
 _NO_TOOL_RUNTIME = cast(ToolRuntime, None)
 logger = logging.getLogger(__name__)
@@ -83,25 +87,33 @@ async def _run_research_query(
 ) -> ResearchNotes:
     """Run one researcher worker and return its structured notes."""
     async with semaphore:
+        guard_state = ResearcherRunGuardState(
+            invocation_id=uuid4().hex,
+            depth=normalize_research_depth(getattr(query, "depth", None)),
+        )
+        guard_token = CURRENT_RESEARCHER_GUARD_STATE.set(guard_state)
         try:
-            result = await researcher_runnable.ainvoke(
-                researcher_invoke_state(query, runtime),
-                config=researcher_invoke_config(runtime, callbacks),
-            )
-        except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-            raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
+            try:
+                result = await researcher_runnable.ainvoke(
+                    researcher_invoke_state(query, runtime),
+                    config=researcher_invoke_config(runtime, callbacks),
+                )
+            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
 
-        try:
-            structured = result.get("structured_response") if isinstance(result, dict) else None
-            if structured is None:
-                raise ValueError("researcher worker did not return structured ResearchNotes")
-            note = ResearchNotes.model_validate(structured)
-        except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-            raise ValueError(
-                f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
-            ) from exc
+            try:
+                structured = result.get("structured_response") if isinstance(result, dict) else None
+                if structured is None:
+                    raise ValueError("researcher worker did not return structured ResearchNotes")
+                note = ResearchNotes.model_validate(structured)
+            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                raise ValueError(
+                    f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
+                ) from exc
 
-        return note
+            return note
+        finally:
+            CURRENT_RESEARCHER_GUARD_STATE.reset(guard_token)
 
 
 def _research_note_slug(text: str) -> str:

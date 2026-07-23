@@ -39,6 +39,7 @@ general:
 llms:
   nemotron_super_llm:
     _type: nim
+    # Inference Hub model details:
     model_name: nvidia/nvidia/nemotron-3-ultra
     # model_name: nvidia/zai-org/glm-5.2
     base_url: "https://inference-api.nvidia.com/v1"
@@ -96,6 +97,14 @@ functions:
     enforce_tier_tools: false
     single_loop_single_shot: true
     dynamic_orchestrator_sections: true
+    researcher_loop_guard:
+      enabled: true
+      source_call_budgets:
+        low: 1
+        medium: 3
+        high: 6
+      max_identical_source_calls: 2
+      max_consecutive_thinks: 3
     enable_source_router: false
     exclude_tools:
       - web_search_tool

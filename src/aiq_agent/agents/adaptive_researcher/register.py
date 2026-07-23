@@ -57,6 +57,7 @@ from .agent import DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE
 from .agent import DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .agent import AdaptiveResearcherAgent
 from .models import AdaptiveResearchAgentState
+from .models import ResearcherLoopGuardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,13 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "Reserved for future dynamic model switching per declared tier; currently a no-op. "
             "When set, allows operators to point the single_shot loop at a smaller/cheaper model "
             "without affecting standard/deep tier quality."
+        ),
+    )
+    researcher_loop_guard: ResearcherLoopGuardConfig = Field(
+        default_factory=ResearcherLoopGuardConfig,
+        description=(
+            "Hard per-researcher limits for source-tool calls, repeated identical requests, "
+            "and uninterrupted think loops. Applies to standard/deep run_research_batch workers."
         ),
     )
     skills: DeepResearchSkillsConfig | FunctionRef | None = Field(
@@ -266,6 +274,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         single_loop_single_shot=config.single_loop_single_shot,
         single_shot_search_budget=config.single_shot_search_budget,
         dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
+        researcher_loop_guard=config.researcher_loop_guard,
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
@@ -304,6 +313,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     single_loop_single_shot=config.single_loop_single_shot,
                     single_shot_search_budget=config.single_shot_search_budget,
                     dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
+                    researcher_loop_guard=config.researcher_loop_guard,
                     skills=skills_config,
                     sandbox=sandbox_config,
                     job_id=job_id,

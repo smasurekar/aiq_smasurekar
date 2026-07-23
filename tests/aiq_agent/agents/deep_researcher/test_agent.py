@@ -36,6 +36,7 @@ from aiq_agent.agents.deep_researcher.models import DeepResearchAgentState
 from aiq_agent.agents.deep_researcher.models import ResearchNotes
 from aiq_agent.agents.deep_researcher.models import ResearchPlan
 from aiq_agent.agents.deep_researcher.models import ResearchQuery
+from aiq_agent.agents.deep_researcher.researcher_context import CURRENT_RESEARCHER_GUARD_STATE
 from aiq_agent.agents.deep_researcher.tools import research as research_module
 from aiq_agent.agents.deep_researcher.tools.research import build_research_batch_tool
 from aiq_agent.agents.deep_researcher.tools.research import researcher_invoke_state
@@ -975,6 +976,38 @@ class TestDeepResearcherAgent:
         assert invoke_state["files"] is files
         assert invoke_state["messages"][0].content.startswith("Batch research invocation")
         assert "Batch research invocation" in invoke_state["messages"][0].content
+
+    @pytest.mark.asyncio
+    async def test_researcher_invocation_sets_and_resets_loop_guard_context(self):
+        observed_states = []
+
+        class FakeResearcherRunnable:
+            async def ainvoke(inner_self, state, config=None):
+                observed_states.append(CURRENT_RESEARCHER_GUARD_STATE.get())
+                await asyncio.sleep(0)
+                assert CURRENT_RESEARCHER_GUARD_STATE.get() is observed_states[-1]
+                return self._structured_notes_response("Guarded Query")
+
+        query = ResearchQuery(
+            query="guarded query",
+            preferred_tools=["web_search_tool"],
+            fallback_tools=[],
+            target_components=["overview"],
+            rationale="Verify per-invocation state.",
+        )
+        assert CURRENT_RESEARCHER_GUARD_STATE.get() is None
+
+        note = await research_module._run_research_query(
+            query=query,
+            researcher_runnable=FakeResearcherRunnable(),
+            runtime=None,
+            callbacks=[],
+            semaphore=asyncio.Semaphore(1),
+        )
+
+        assert note.query_topic == "Guarded Query"
+        assert len(observed_states) == 1
+        assert observed_states[0].depth == "medium"
 
     def test_modal_backend_is_concrete_cached_and_routes_skills_locally(self, mock_llm_provider, real_tool):
         """Modal backend creation is lazy, cached, and skill reads do not hit Modal."""

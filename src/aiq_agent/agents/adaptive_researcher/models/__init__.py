@@ -33,6 +33,8 @@ from aiq_agent.agents.deep_researcher.models import SourceRecommendation
 from aiq_agent.agents.deep_researcher.models import SourceRoutingPlan
 from aiq_agent.agents.deep_researcher.models import TaskAnalysis
 
+from .loop_guard import ResearcherLoopGuardConfig
+from .loop_guard import ResearcherSourceCallBudgets
 from .state import AdaptiveResearchAgentState
 from .subagent_contracts import AdaptiveResearchPlan
 from .subagent_contracts import AdaptiveResearchQuery
@@ -47,6 +49,8 @@ __all__ = [
     "EvidenceJudgment",
     "ResearchFinding",
     "ResearchGap",
+    "ResearcherLoopGuardConfig",
+    "ResearcherSourceCallBudgets",
     "ResearchNotes",
     "ResearchPlan",
     "ResearchQuery",

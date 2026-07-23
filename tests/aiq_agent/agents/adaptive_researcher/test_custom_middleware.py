@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for ComplexityRouterMiddleware — static ceiling hiding and single-shot dynamic swap."""
+"""Tests for adaptive researcher middleware and loop guards."""
 
+import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -22,11 +23,18 @@ import pytest
 
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _DECLARE_EFFORT_TIER_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _RESEARCHER_BUDGET_NUDGE
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _RUN_RESEARCH_BATCH_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _SINGLE_SHOT_BUDGET_NUDGE
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _THINK_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ComplexityRouterMiddleware
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ConsecutiveThinkGuardMiddleware
+from aiq_agent.agents.adaptive_researcher.custom_middleware import ResearcherLoopGuardMiddleware
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _canonical_source_signature
+from aiq_agent.agents.adaptive_researcher.models import ResearcherLoopGuardConfig
+from aiq_agent.agents.adaptive_researcher.models import ResearcherSourceCallBudgets
+from aiq_agent.agents.deep_researcher.researcher_context import CURRENT_RESEARCHER_GUARD_STATE
+from aiq_agent.agents.deep_researcher.researcher_context import ResearcherRunGuardState
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -535,6 +543,202 @@ class TestSingleShotSearchBudget:
             single_loop_single_shot=True,
         )
         assert mw._search_budget == _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
+
+
+# ---------------------------------------------------------------------------
+# ResearcherLoopGuardMiddleware
+# ---------------------------------------------------------------------------
+
+
+class TestResearcherLoopGuardMiddleware:
+    def setup_method(self):
+        self.config = ResearcherLoopGuardConfig(
+            source_call_budgets=ResearcherSourceCallBudgets(low=1, medium=3, high=6),
+            max_identical_source_calls=2,
+            max_consecutive_thinks=2,
+        )
+        self.mw = ResearcherLoopGuardMiddleware(
+            source_tool_names={"knowledge_search", "web_search_tool"},
+            config=self.config,
+        )
+        self.state = ResearcherRunGuardState(invocation_id="test-run", depth="medium")
+        self.token = CURRENT_RESEARCHER_GUARD_STATE.set(self.state)
+
+    def teardown_method(self):
+        CURRENT_RESEARCHER_GUARD_STATE.reset(self.token)
+
+    @pytest.mark.asyncio
+    async def test_depth_budget_exhausts_and_withdraws_source_and_think_tools(self):
+        self.state.depth = "low"
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+
+        result = await self.mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+
+        assert result.content == f"source evidence{_RESEARCHER_BUDGET_NUDGE}"
+        assert self.state.source_call_count == 1
+        assert self.state.exhausted is True
+        names = {
+            tool.name
+            for tool in self.mw._filter_tools(
+                [_make_tool("knowledge_search"), _make_tool(_THINK_TOOL), _make_tool("get_verified_sources")]
+            )
+        }
+        assert names == {"get_verified_sources"}
+
+    @pytest.mark.parametrize(("depth", "budget"), [("low", 1), ("medium", 3), ("high", 6)])
+    @pytest.mark.asyncio
+    async def test_each_depth_enforces_its_configured_budget(self, depth, budget):
+        self.state.depth = depth
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        result = None
+        for index in range(budget):
+            request = _other_tool_request("knowledge_search")
+            request.tool_call["args"] = {"query": f"distinct-{index}"}
+            result = await self.mw.awrap_tool_call(request, handler)
+
+        assert handler.await_count == budget
+        assert self.state.source_call_count == budget
+        assert self.state.exhausted is True
+        assert _RESEARCHER_BUDGET_NUDGE in result.content
+
+        blocked = _other_tool_request("knowledge_search")
+        blocked.tool_call["args"] = {"query": "one-too-many"}
+        blocked_result = await self.mw.awrap_tool_call(blocked, handler)
+        assert handler.await_count == budget
+        assert "not executed" in blocked_result.content
+
+    @pytest.mark.asyncio
+    async def test_immutable_final_result_still_exhausts_budget(self):
+        self.state.depth = "low"
+        result = MagicMock()
+        result.content = "source evidence"
+        result.model_copy.side_effect = AttributeError("immutable")
+        handler = AsyncMock(return_value=result)
+
+        returned = await self.mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+
+        assert returned is result
+        assert self.state.exhausted is True
+        assert self.mw._filter_tools([_make_tool("knowledge_search")]) == []
+
+    @pytest.mark.asyncio
+    async def test_third_identical_source_call_is_blocked(self):
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        request = _other_tool_request("knowledge_search")
+        request.tool_call["args"] = {"query": "same query", "filters": {"b": 2, "a": 1}}
+        await self.mw.awrap_tool_call(request, handler)
+        await self.mw.awrap_tool_call(request, handler)
+        result = await self.mw.awrap_tool_call(request, handler)
+        assert handler.await_count == 2
+        assert self.state.source_call_count == 2
+        assert self.state.exhaustion_reason == "repeated source-call signature"
+        assert "repeated source-call limit" in result.content
+
+    @pytest.mark.asyncio
+    async def test_alternating_think_and_same_search_is_bounded(self):
+        think_guard = ConsecutiveThinkGuardMiddleware(max_consecutive_thinks=3)
+        handler = AsyncMock(return_value=_tool_message("tool result"))
+
+        async def guarded_call(request):
+            async def invoke_think_guard(inner_request):
+                return await think_guard.awrap_tool_call(inner_request, handler)
+
+            return await self.mw.awrap_tool_call(request, invoke_think_guard)
+
+        search = _other_tool_request("knowledge_search")
+        search.tool_call["args"] = {"query": "same query"}
+        for _ in range(2):
+            await guarded_call(_think_request())
+            await guarded_call(search)
+            assert self.state.consecutive_think_count == 0
+
+        await guarded_call(_think_request())
+        result = await guarded_call(search)
+
+        assert self.state.source_call_count == 2
+        assert self.state.exhaustion_reason == "repeated source-call signature"
+        assert "not executed" in result.content
+
+    def test_signature_is_stable_across_mapping_key_order(self):
+        first = _canonical_source_signature("knowledge_search", {"query": "x", "filters": {"a": 1, "b": 2}})
+        second = _canonical_source_signature("knowledge_search", {"filters": {"b": 2, "a": 1}, "query": "x"})
+        assert first == second
+
+    @pytest.mark.asyncio
+    async def test_distinct_source_arguments_do_not_collide(self):
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        first = _other_tool_request("knowledge_search")
+        first.tool_call["args"] = {"query": "first"}
+        second = _other_tool_request("knowledge_search")
+        second.tool_call["args"] = {"query": "second"}
+        await self.mw.awrap_tool_call(first, handler)
+        await self.mw.awrap_tool_call(second, handler)
+        assert handler.await_count == 2
+        assert len(self.state.source_signature_counts) == 2
+        assert self.state.exhausted is False
+
+    @pytest.mark.asyncio
+    async def test_non_source_tools_are_not_counted(self):
+        handler = AsyncMock(return_value=_tool_message("helper result"))
+        result = await self.mw.awrap_tool_call(_other_tool_request("get_verified_sources"), handler)
+        assert result.content == "helper result"
+        assert self.state.source_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_parallel_calls_share_one_hard_budget(self):
+        self.state.depth = "low"
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        first = _other_tool_request("knowledge_search")
+        first.tool_call["args"] = {"query": "first"}
+        second = _other_tool_request("web_search_tool")
+        second.tool_call["args"] = {"query": "second"}
+        results = await asyncio.gather(
+            self.mw.awrap_tool_call(first, handler),
+            self.mw.awrap_tool_call(second, handler),
+        )
+        assert handler.await_count == 1
+        assert self.state.source_call_count == 1
+        assert any("not executed" in result.content for result in results)
+
+    @pytest.mark.asyncio
+    async def test_context_state_is_isolated_between_concurrent_invocations(self):
+        async def run(invocation_id: str):
+            state = ResearcherRunGuardState(invocation_id=invocation_id, depth="low")
+            token = CURRENT_RESEARCHER_GUARD_STATE.set(state)
+            try:
+                await asyncio.sleep(0)
+                handler = AsyncMock(return_value=_tool_message("source evidence"))
+                await self.mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+                return state
+            finally:
+                CURRENT_RESEARCHER_GUARD_STATE.reset(token)
+
+        first, second = await asyncio.gather(run("first"), run("second"))
+        assert first.invocation_id != second.invocation_id
+        assert first.source_call_count == second.source_call_count == 1
+        assert self.state.source_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_consecutive_think_limit_withdraws_think_for_researcher(self):
+        think_guard = ConsecutiveThinkGuardMiddleware(max_consecutive_thinks=2)
+        handler = AsyncMock(return_value=_tool_message())
+        await think_guard.awrap_tool_call(_think_request(), handler)
+        result = await think_guard.awrap_tool_call(_think_request(), handler)
+        assert "WARNING" in result.content
+        assert self.state.think_blocked is True
+        names = {tool.name for tool in self.mw._filter_tools([_make_tool(_THINK_TOOL), _make_tool("knowledge_search")])}
+        assert names == {"knowledge_search"}
+
+    @pytest.mark.asyncio
+    async def test_disabled_guard_passes_through_without_counting(self):
+        middleware = ResearcherLoopGuardMiddleware(
+            source_tool_names={"knowledge_search"},
+            config=ResearcherLoopGuardConfig(enabled=False),
+        )
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        result = await middleware.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        assert result.content == "source evidence"
+        assert self.state.source_call_count == 0
 
 
 # ---------------------------------------------------------------------------
