@@ -32,7 +32,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphRecursionError
 
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepAgentsRuntime
@@ -51,6 +53,7 @@ from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .factory import build_adaptive_research_graph
 from .factory import build_adaptive_research_middleware_set
 from .factory import build_adaptive_research_tool_set
+from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import ResearcherLoopGuardConfig
 from .tools.finalize import EFFORT_TIER_PATH
@@ -99,6 +102,7 @@ class AdaptiveResearcherAgent:
         single_shot_search_budget: int = DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         dynamic_orchestrator_sections: bool = False,
         researcher_loop_guard: ResearcherLoopGuardConfig | None = None,
+        request_termination: AdaptiveRequestTerminationConfig | None = None,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
         job_id: str | None = None,
@@ -130,6 +134,9 @@ class AdaptiveResearcherAgent:
                 Off by default renders the full prompt once at build time, exactly as before.
             researcher_loop_guard: Hard per-researcher source-call, repeated-call, and consecutive-think
                 limits. Defaults to enabled budgets aligned with the researcher prompt.
+            request_termination: Request-wide batch/query/turn budgets, the hard workflow deadline, and
+                the graph recursion ceiling. Guarantees every request reaches a terminal state.
+                Defaults to enabled, finite budgets.
             skills: Optional DeepAgents skills config.
             sandbox: Optional DeepAgents sandbox config.
             job_id: Optional async job identifier used to scope sandbox backends.
@@ -154,6 +161,7 @@ class AdaptiveResearcherAgent:
         self.single_shot_search_budget = single_shot_search_budget
         self.dynamic_orchestrator_sections = dynamic_orchestrator_sections
         self.researcher_loop_guard = researcher_loop_guard or ResearcherLoopGuardConfig()
+        self.request_termination = request_termination or AdaptiveRequestTerminationConfig()
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -247,6 +255,7 @@ class AdaptiveResearcherAgent:
             single_shot_search_budget=self.single_shot_search_budget,
             dynamic_orchestrator_sections=self.dynamic_orchestrator_sections,
             researcher_loop_guard=self.researcher_loop_guard,
+            request_termination=self.request_termination,
         )
 
     @staticmethod
@@ -388,6 +397,152 @@ class AdaptiveResearcherAgent:
         else:
             messages[-1] = type(last_msg)(content=content)
 
+    @staticmethod
+    def _persisted_notes_and_gaps(files: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+        """Best-effort harvest of note summaries and gap descriptions from persisted ResearchNotes.
+
+        Scans ``/shared/research_note_*.json`` entries for the researcher-authored ``summary`` and
+        ``gaps[].description`` fields. Used only by the deterministic partial-result path, so it is
+        deliberately forgiving: any unreadable or malformed note is skipped rather than raising.
+        Returns ``([], [])`` when no notes are available (the common timeout case, since the
+        mid-run graph state is not returned) — the caller then falls back to a sources-only answer.
+        """
+        summaries: list[str] = []
+        gaps: list[str] = []
+        if not isinstance(files, dict):
+            return summaries, gaps
+        for path, entry in files.items():
+            if not (isinstance(path, str) and "research_note_" in path and path.endswith(".json")):
+                continue
+            content = entry.get("content") if isinstance(entry, dict) else entry
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="replace")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            try:
+                data = json.loads(content)
+            except (ValueError, TypeError):
+                continue
+            summary = data.get("summary") if isinstance(data, dict) else None
+            if isinstance(summary, str) and summary.strip():
+                summaries.append(summary.strip())
+            for gap in (data.get("gaps") if isinstance(data, dict) else None) or []:
+                description = gap.get("description") if isinstance(gap, dict) else None
+                if isinstance(description, str) and description.strip():
+                    gaps.append(description.strip())
+        return summaries, gaps
+
+    def _render_deterministic_partial(self, state: AdaptiveResearchAgentState, reason: str) -> str:
+        """Render a citation-safe partial report from already-gathered evidence — no model call.
+
+        Uses only what is durably available after a forced termination: the in-memory verified
+        source registry (``source_registry_middleware``) and any persisted ResearchNotes reachable
+        from ``state.files``. It never fabricates: with no notes and no sources it returns a bounded
+        failure explaining the configured sources did not provide enough evidence.
+        """
+        summaries, gaps = self._persisted_notes_and_gaps(state.files)
+        sources = (
+            self.source_registry_middleware.get_source_entries(mode="compact")
+            if self.source_registry_middleware.has_sources()
+            else []
+        )
+
+        if not summaries and not gaps and not sources:
+            return (
+                "# Research could not be completed\n\n"
+                f"Research stopped because {reason}, and the configured sources did not return enough "
+                "evidence to produce even a partial answer. Please try again, narrow the question, or "
+                "confirm that the required documents are available in the knowledge base."
+            )
+
+        parts = [
+            "# Partial research result",
+            "",
+            (
+                f"Research stopped before completion because {reason}. The summary below is assembled "
+                "from the evidence gathered so far and is intentionally conservative."
+            ),
+            "",
+            "## What was found",
+            "",
+        ]
+        if summaries:
+            parts.extend(f"- {summary}" for summary in summaries)
+        elif sources:
+            parts.append(
+                f"- No fully synthesized findings were available when research stopped; "
+                f"{len(sources)} source(s) were consulted and are listed below."
+            )
+        else:
+            parts.append("- No synthesized findings were available when research stopped.")
+
+        parts.extend(["", "## Evidence gaps", ""])
+        if gaps:
+            parts.extend(f"- {gap}" for gap in gaps)
+        else:
+            parts.append(
+                "- Some requested information could not be confirmed from the configured sources "
+                "within the research budget."
+            )
+
+        if sources:
+            parts.extend(["", "## Sources", ""])
+            for index, entry in enumerate(sources, start=1):
+                label = entry.title or entry.citation_key or entry.url or entry.tool_name or "source"
+                locator = entry.url or entry.citation_key or entry.tool_name or ""
+                suffix = f" — {locator}" if locator and locator != label else ""
+                parts.append(f"{index}. {label}{suffix}")
+
+        return "\n".join(parts)
+
+    def _build_partial_result(self, state: AdaptiveResearchAgentState, *, reason: str) -> AdaptiveResearchAgentState:
+        """Return a terminal partial-result state after a forced termination (deadline/recursion).
+
+        Ordered fallback: (1) reuse an already-completed report if one is present in the input
+        state files, running it through the normal citation-verification path; otherwise (2) build
+        a deterministic partial from gathered evidence. The result is always sanitized, re-emitted
+        to the frontend, and returned as a terminal state — never left running.
+        """
+        final_message = self._resolve_output_file_markdown({}, state.files)
+        reused_completed_report = final_message is not None
+        if not reused_completed_report:
+            final_message = self._render_deterministic_partial(state, reason)
+
+        # Verify citations only when reusing a real report that carries [n] markers against a
+        # populated registry. The deterministic body has no inline citations — its Sources section
+        # is rendered directly from verified entries — so it is sanitized but not re-verified.
+        verify_reused = (
+            reused_completed_report
+            and self.enable_citation_verification
+            and self.source_registry_middleware.has_sources()
+        )
+        if verify_reused:
+            verification = verify_citations(
+                final_message,
+                self.source_registry_middleware.active_registry(),
+                reference_sources=self.source_registry_middleware.get_source_entries(mode="compact"),
+            )
+            final_message = verification.verified_report
+
+        final_message = sanitize_report(final_message).sanitized_report
+
+        for cb in self.callbacks:
+            if hasattr(cb, "emit_final_report"):
+                cb.emit_final_report(final_message)
+                break
+
+        logger.info("=" * 80)
+        logger.info("Adaptive Research: Returning partial result (%s)", reason)
+        logger.info(
+            "Reused completed report: %s | Final answer length: %d characters",
+            reused_completed_report,
+            len(final_message),
+        )
+        logger.info("=" * 80)
+
+        messages = list(state.messages) + [AIMessage(content=final_message)]
+        return state.model_copy(update={"messages": messages})
+
     async def run(self, state: AdaptiveResearchAgentState) -> AdaptiveResearchAgentState:
         """
         Execute adaptive research: the model self-selects effort and self-limits its tool use.
@@ -407,9 +562,34 @@ class AdaptiveResearcherAgent:
             logger.info("Query: %s...", query[:100])
             logger.info("=" * 80)
 
+        # Hard workflow deadline: bound the entire graph invocation (orchestrator + planner +
+        # researchers + writer + source tools + synthesis) so a request can never remain active
+        # indefinitely. A per-source-tool timeout is not a workflow timeout. On the deadline — or
+        # if the graph hits its recursion ceiling — we drop into a deterministic partial result
+        # built from evidence already gathered rather than raising an opaque server error.
+        timeout_seconds = self.request_termination.workflow_timeout_seconds
         try:
-            result = await agent.ainvoke(state, config={"callbacks": self.callbacks} if self.callbacks else None)
+            async with asyncio.timeout(timeout_seconds):
+                result = await agent.ainvoke(state, config={"callbacks": self.callbacks} if self.callbacks else None)
+        except TimeoutError:
+            logger.warning(
+                "Adaptive Research exceeded the %ds workflow deadline; returning a deterministic partial result.",
+                timeout_seconds,
+            )
+            return self._build_partial_result(state, reason=f"the {timeout_seconds}s workflow time limit was reached")
+        except GraphRecursionError:
+            logger.warning(
+                "Adaptive Research reached the graph recursion limit (%d); returning a deterministic partial result.",
+                self.request_termination.recursion_limit,
+            )
+            return self._build_partial_result(state, reason="the maximum research step limit was reached")
+        except Exception as ex:
+            # Preserve the original observability: any other invocation failure is logged with a
+            # traceback and re-raised (post-processing errors are handled by the block below).
+            logger.error("Adaptive Research failed: %s", ex, exc_info=True)
+            raise
 
+        try:
             # Resolve via the two sub-methods (not the combined extractor) so we know whether the
             # answer came from a known output file or from the last-resort inline salvage.
             final_message = self._resolve_output_file_markdown(result, state.files)

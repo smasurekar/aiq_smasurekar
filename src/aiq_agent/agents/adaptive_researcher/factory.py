@@ -63,7 +63,9 @@ from aiq_agent.common import LLMRole
 from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .custom_middleware import ComplexityRouterMiddleware
 from .custom_middleware import ConsecutiveThinkGuardMiddleware
+from .custom_middleware import OrchestratorLoopGuardMiddleware
 from .custom_middleware import ResearcherLoopGuardMiddleware
+from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
 from .models import ResearcherLoopGuardConfig
@@ -183,6 +185,7 @@ def build_adaptive_research_graph(
     max_research_concurrency: int,
     enabled_tiers: list[str],
     researcher_loop_guard: ResearcherLoopGuardConfig,
+    request_termination: AdaptiveRequestTerminationConfig | None = None,
     enforce_tier_tools: bool = False,
     enable_source_router: bool = False,
     single_loop_single_shot: bool = False,
@@ -366,7 +369,18 @@ def build_adaptive_research_graph(
     # ComplexityRouterMiddleware is attached for Layer-B tool hiding, the single-shot tool swap,
     # and/or the dynamic prompt swap. When dynamic sections are active it also carries the
     # per-tier renderer so it can replace the router prompt with the declared tier's prompt.
+    # Request-wide termination guard: bounds run_research_batch calls, total delegated queries,
+    # duplicate queries, and orchestrator turns for the whole request, then withdraws the research
+    # tools so the run finalizes. Attached before ComplexityRouterMiddleware; both capture the
+    # declared tier independently via their own awrap_tool_call, and their tool filters are
+    # subtractive so their order is immaterial. Defaults to an enabled config when none is passed.
+    request_termination = request_termination or AdaptiveRequestTerminationConfig()
     orchestrator_middleware = context.middleware(context.middleware_set.orchestrator)
+    if request_termination.enabled:
+        orchestrator_middleware = [
+            *orchestrator_middleware,
+            OrchestratorLoopGuardMiddleware(config=request_termination),
+        ]
     if enforce_tier_tools or single_loop_single_shot or dynamic_sections_active:
         orchestrator_middleware = [
             *orchestrator_middleware,
@@ -395,4 +409,4 @@ def build_adaptive_research_graph(
         permissions=context.permissions(ORCHESTRATOR_AGENT),
         backend=context.backend,
     )
-    return agent.with_config({"recursion_limit": 2000})
+    return agent.with_config({"recursion_limit": request_termination.recursion_limit})

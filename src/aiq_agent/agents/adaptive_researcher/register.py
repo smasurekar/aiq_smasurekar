@@ -56,6 +56,7 @@ from .agent import DEFAULT_MAX_RESEARCH_CONCURRENCY
 from .agent import DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE
 from .agent import DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .agent import AdaptiveResearcherAgent
+from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import ResearcherLoopGuardConfig
 
@@ -170,6 +171,16 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "and uninterrupted think loops. Applies to standard/deep run_research_batch workers."
         ),
     )
+    request_termination: AdaptiveRequestTerminationConfig = Field(
+        default_factory=AdaptiveRequestTerminationConfig,
+        description=(
+            "Request-wide termination envelope: finite budgets for run_research_batch calls, total "
+            "delegated queries, repeated queries, and orchestrator turns, plus a hard workflow "
+            "deadline and graph recursion ceiling. Bounds the whole top-level request so it always "
+            "reaches a terminal state (complete, partial, or bounded failure) — unlike the "
+            "per-researcher loop guard, whose budget resets for every new researcher invocation."
+        ),
+    )
     skills: DeepResearchSkillsConfig | FunctionRef | None = Field(
         default=None,
         description="Optional inline skills config or function ref to a deep_research_skills config.",
@@ -275,6 +286,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         single_shot_search_budget=config.single_shot_search_budget,
         dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
         researcher_loop_guard=config.researcher_loop_guard,
+        request_termination=config.request_termination,
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
@@ -314,6 +326,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     single_shot_search_budget=config.single_shot_search_budget,
                     dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
                     researcher_loop_guard=config.researcher_loop_guard,
+                    request_termination=config.request_termination,
                     skills=skills_config,
                     sandbox=sandbox_config,
                     job_id=job_id,
