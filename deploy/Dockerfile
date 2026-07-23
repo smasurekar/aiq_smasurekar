@@ -55,37 +55,46 @@ ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV UV_PYTHON=/app/.venv/bin/python
 
-# Copy workspace configuration and lockfile
+# Copy dependency metadata before application source so code-only changes keep
+# the third-party dependency layer cached. Workspace member metadata is needed
+# to resolve the local packages referenced by the runtime-tools group.
 COPY pyproject.toml uv.lock ./
+COPY sources/google_scholar_paper_search/pyproject.toml ./sources/google_scholar_paper_search/
+COPY sources/tavily_web_search/pyproject.toml ./sources/tavily_web_search/
+COPY sources/exa_web_search/pyproject.toml ./sources/exa_web_search/
+COPY sources/nimble_web_search/pyproject.toml ./sources/nimble_web_search/
+COPY sources/duckduckgo_news_search/pyproject.toml ./sources/duckduckgo_news_search/
+COPY sources/polymarket_prediction_market/pyproject.toml ./sources/polymarket_prediction_market/
+COPY sources/knowledge_layer/pyproject.toml ./sources/knowledge_layer/
+COPY frontends/aiq_api/pyproject.toml ./frontends/aiq_api/
 
-# Copy all source packages
+# Install release dependencies from the frozen lock without installing local
+# workspace packages. The cache mount is useful when the lockfile changes.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra pii --extra s3 --no-dev --group runtime-tools --no-install-workspace
+
+# Copy application and workspace package sources after dependencies.
 COPY src/ ./src/
 COPY sources/ ./sources/
 COPY frontends/aiq_api/ ./frontends/aiq_api/
 COPY frontends/cli/ ./frontends/cli/
 COPY frontends/debug/ ./frontends/debug/
-COPY configs/ ./configs/
 # Only copy runtime scripts from deploy/ — never copy the full directory
 # to avoid leaking .env, Helm charts, compose files, or other dev artifacts.
 COPY deploy/entrypoint.py deploy/start_web.py ./deploy/
 
-# Install dependencies using uv sync. We do NOT pass --no-dev: the workspace
-# source packages (tavily-web-search, exa-web-search, ...) and their runtime
-# deps (e.g. langchain-tavily) are declared in the [dependency-groups] dev group,
-# so --no-dev would omit them and the editable source installs below would
-# import-fail at runtime. Syncing with the dev group installs those deps from the
-# frozen lock (still pinned, no re-resolve). TODO(deploy): move the source
-# packages to a dedicated non-dev group to keep test-only tooling out of the image.
-RUN uv sync --frozen --extra pii --extra s3
-
-# Install workspace packages (without CLI for base). The root install does not
-# need workspace source overrides because dependencies were synced above; avoid
-# parsing opt-in workspace groups whose source trees are intentionally absent.
+# Install release workspace packages without CLI or debug dependencies. Their
+# third-party deps were already synced above from the frozen lock, so these are
+# --no-deps. The root install additionally passes --no-sources: it does not need
+# workspace source overrides, and this avoids parsing opt-in workspace groups
+# whose source trees are intentionally absent.
 RUN uv pip install --no-sources --no-deps -e . \
     && uv pip install --no-deps -e ./sources/google_scholar_paper_search \
     && uv pip install --no-deps -e ./sources/tavily_web_search \
     && uv pip install --no-deps -e ./sources/exa_web_search \
     && uv pip install --no-deps -e ./sources/nimble_web_search \
+    && uv pip install --no-deps -e ./sources/duckduckgo_news_search \
+    && uv pip install --no-deps -e ./sources/polymarket_prediction_market \
     && uv pip install --no-deps -e "./sources/knowledge_layer[all]" \
     && uv pip install --no-deps -e ./frontends/aiq_api \
     && uv pip install "psycopg[binary]>=3.0.0"
@@ -93,17 +102,22 @@ RUN uv pip install --no-sources --no-deps -e . \
 RUN /app/.venv/bin/python -c \
     "import asyncio; import aiq_api; import knowledge_layer; import presidio_analyzer; import presidio_anonymizer; import spacy; from nemoguardrails.library.sensitive_data_detection.actions import mask_sensitive_data; from nemoguardrails.rails.llm.config import RailsConfig; config = RailsConfig.from_content(yaml_content='rails:\n  config:\n    sensitive_data_detection:\n      output:\n        entities:\n          - EMAIL_ADDRESS\n'); assert spacy.util.is_package('en_core_web_lg'); assert asyncio.run(mask_sensitive_data(source='output', text='Contact customer@example.com', config=config)) == 'Contact <EMAIL_ADDRESS>'; print('✓ Base packages and PII runtime installed')"
 
+# Config changes should not invalidate dependency or package installation.
+COPY configs/ ./configs/
+
 # Keep immutable application assets root-owned; only runtime data is writable by the service user.
 RUN chmod +x /app/deploy/start_web.py \
-    && mkdir -p /app/data \
-    && chown 1000:1000 /app/data
+    && install -d -o 1000 -g 1000 /app/data
 
 # =============================================================================
 # Stage 2: Development (includes CLI)
 # =============================================================================
 FROM builder AS dev-builder
 
-# Install CLI and debug UI for development
+# Install CLI and debug UI for development. Deliberately `uv pip install` rather
+# than `uv sync`: sync reconciles the environment to exactly the requested
+# groups/extras and would evict the `pii` extras and psycopg that the builder
+# stage installed above.
 RUN uv pip install --no-deps -e ./frontends/cli \
     && uv pip install --no-deps -e ./frontends/debug
 
