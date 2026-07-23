@@ -65,7 +65,7 @@ def _build_and_capture(mock_llm_provider, *, state=None, **agent_kwargs):
     graph.with_config = MagicMock(return_value=graph)
     with (
         patch("aiq_agent.agents.adaptive_researcher.factory.create_deep_agent", return_value=graph) as create,
-        patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph),
+        patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph) as create_researcher,
         patch(
             "aiq_agent.agents.deep_researcher.factory.create_summarization_middleware",
             return_value=_FakeSummarizationMiddleware(),
@@ -74,7 +74,9 @@ def _build_and_capture(mock_llm_provider, *, state=None, **agent_kwargs):
         agent = AdaptiveResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool], **agent_kwargs)
         state = state or AdaptiveResearchAgentState(messages=[HumanMessage(content="q")])
         agent._build_orchestrator_agent(state)
-    return create.call_args.kwargs
+    captured = dict(create.call_args.kwargs)
+    captured["_researcher_middleware"] = create_researcher.call_args.kwargs["middleware"]
+    return captured
 
 
 class TestOrchestratorWiring:
@@ -111,6 +113,13 @@ class TestOrchestratorWiring:
         kwargs = _build_and_capture(mock_llm_provider, enforce_tier_tools=True, enabled_tiers=["single_shot"])
         names = {m.__class__.__name__ for m in kwargs["middleware"]}
         assert "ComplexityRouterMiddleware" in names
+
+    def test_researcher_guards_wrap_framework_tool_retries(self, mock_llm_provider):
+        kwargs = _build_and_capture(mock_llm_provider)
+        names = [middleware.__class__.__name__ for middleware in kwargs["_researcher_middleware"]]
+        retry_index = names.index("ToolRetryMiddleware")
+        assert names.index("ResearcherLoopGuardMiddleware") < retry_index
+        assert names.index("ConsecutiveThinkGuardMiddleware") < retry_index
 
     def test_delta_preserves_delegation_under_shallow_enforcement(self, mock_llm_provider):
         state = AdaptiveResearchAgentState(

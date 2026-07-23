@@ -319,6 +319,40 @@ The batch tool returns the notes to the orchestrator and persists them under
 notes remain registered and persisted; only failed or missing queries are
 eligible for another call.
 
+#### Adaptive Researcher Worker Loop Guard
+
+The adaptive researcher adds a hard per-worker loop guard to the shared batch
+execution path. The existing consecutive-think guard only detects uninterrupted
+`think` calls; a sequence that alternates `think` and a source tool resets that
+counter. The adaptive guard separately limits all source calls and repeated
+normalized source requests, then withdraws source tools and `think` so the
+worker must return `ResearchNotes` with explicit gaps.
+
+Each concurrent `ResearchQuery` receives context-local guard state. Counts do
+not leak between workers or simultaneous requests even though the researcher
+runnable and middleware instances are reusable.
+
+Configure the limits on `adaptive_research_agent`:
+
+```yaml
+researcher_loop_guard:
+  enabled: true
+  source_call_budgets:
+    low: 1
+    medium: 3
+    high: 6
+  max_identical_source_calls: 2
+  max_consecutive_thinks: 3
+```
+
+`source_call_budgets` applies to each researcher invocation, based on the
+query's `depth`; a missing depth uses `medium`. Calls are counted before tool
+execution so parallel calls cannot exceed the ceiling. Repeated calls use a
+hash of the tool name and canonicalized arguments, and logs contain only that
+metadata rather than raw query content. Set `enabled: false` to restore the
+previous prompt-guided source behavior while retaining the existing
+consecutive-think middleware.
+
 ### Phase 4: Writer-First Final Synthesis
 
 The orchestrator delegates once the plan and research notes are available.

@@ -38,15 +38,20 @@ earlier in the chain may transform or omit prior AIMessages by the time this mid
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
+from langchain_core.messages import ToolMessage
 
 # Reuse the tool-name reader from deep_researcher so tool shapes are handled identically.
 from aiq_agent.agents.deep_researcher.custom_middleware import _request_tool_name
+from aiq_agent.agents.deep_researcher.researcher_context import CURRENT_RESEARCHER_GUARD_STATE
 
+from .models import ResearcherLoopGuardConfig
 from .tiers import tier_ceiling
 
 logger = logging.getLogger(__name__)
@@ -284,19 +289,153 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         return await handler(request.override(**self._model_overrides(request)))
 
 
+_RESEARCHER_BUDGET_NUDGE = (
+    "\n\n[SYSTEM — researcher source budget exhausted. Stop searching and return "
+    "ResearchNotes now using the evidence already gathered. Represent unsupported target "
+    "components as ResearchGap entries; do not guess.]"
+)
+
+
+def _canonical_source_signature(tool_name: str, args: object) -> str:
+    """Hash a source-tool name and canonical arguments without retaining argument content."""
+    try:
+        canonical_args = json.dumps(args, sort_keys=True, separators=(",", ":"), default=repr)
+    except (TypeError, ValueError):
+        canonical_args = repr(args)
+    payload = f"{tool_name}:{canonical_args}".encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+class ResearcherLoopGuardMiddleware(AgentMiddleware):
+    """Hard-limit source calls and repeated requests within one researcher invocation."""
+
+    def __init__(
+        self,
+        *,
+        source_tool_names: set[str] | frozenset[str],
+        config: ResearcherLoopGuardConfig,
+    ) -> None:
+        self._source_tool_names = frozenset(source_tool_names)
+        self._config = config
+
+    @staticmethod
+    def _mark_exhausted(state, reason: str) -> None:
+        state.exhausted = True
+        state.exhaustion_reason = reason
+
+    @staticmethod
+    def _append_nudge(result):
+        try:
+            return result.model_copy(update={"content": f"{result.content}{_RESEARCHER_BUDGET_NUDGE}"})
+        except Exception:
+            return result
+
+    @staticmethod
+    def _blocked_result(tool_call: dict, reason: str) -> ToolMessage:
+        return ToolMessage(
+            content=(
+                f"Source tool not executed: researcher loop guard reached {reason}. "
+                "Stop searching and return structured ResearchNotes using gathered evidence; "
+                "record unsupported requirements as ResearchGap entries."
+            ),
+            tool_call_id=tool_call.get("id", "researcher-loop-guard"),
+            name=tool_call.get("name", "source-tool"),
+            status="error",
+        )
+
+    def _filter_tools(self, tools: list[object]) -> list[object]:
+        state = CURRENT_RESEARCHER_GUARD_STATE.get()
+        if not self._config.enabled or state is None:
+            return tools
+        hidden = set()
+        if state.exhausted:
+            hidden.update(self._source_tool_names)
+            hidden.add(_THINK_TOOL)
+        elif state.think_blocked:
+            hidden.add(_THINK_TOOL)
+        if not hidden:
+            return tools
+        return [tool for tool in tools if _request_tool_name(tool) not in hidden]
+
+    def wrap_model_call(self, request, handler):
+        """Withdraw exhausted source/think tools before a synchronous model call."""
+        return handler(request.override(tools=self._filter_tools(request.tools)))
+
+    async def awrap_model_call(self, request, handler):
+        """Withdraw exhausted source/think tools before an asynchronous model call."""
+        return await handler(request.override(tools=self._filter_tools(request.tools)))
+
+    async def awrap_tool_call(self, request, handler):
+        """Count logical source calls, block repeats, and preserve the last allowed result."""
+        state = CURRENT_RESEARCHER_GUARD_STATE.get()
+        tool_call = getattr(request, "tool_call", None)
+        if (
+            not self._config.enabled
+            or state is None
+            or not isinstance(tool_call, dict)
+            or tool_call.get("name") not in self._source_tool_names
+        ):
+            return await handler(request)
+
+        tool_name = tool_call["name"]
+        budget = self._config.source_call_budgets.for_depth(state.depth)
+        if state.exhausted or state.source_call_count >= budget:
+            self._mark_exhausted(state, "total source-call budget")
+            logger.warning(
+                "Researcher loop guard blocked source call | "
+                "invocation=%s depth=%s tool=%s calls=%d/%d reason=total_budget",
+                state.invocation_id,
+                state.depth,
+                tool_name,
+                state.source_call_count,
+                budget,
+            )
+            return self._blocked_result(tool_call, "the total source-call budget")
+
+        signature = _canonical_source_signature(tool_name, tool_call.get("args", {}))
+        identical_count = state.source_signature_counts.get(signature, 0)
+        if identical_count >= self._config.max_identical_source_calls:
+            self._mark_exhausted(state, "repeated source-call signature")
+            logger.warning(
+                "Researcher loop guard blocked repeated source call | "
+                "invocation=%s depth=%s tool=%s repeats=%d/%d reason=repeated_signature",
+                state.invocation_id,
+                state.depth,
+                tool_name,
+                identical_count,
+                self._config.max_identical_source_calls,
+            )
+            return self._blocked_result(tool_call, "the repeated source-call limit")
+
+        # Count before awaiting so parallel tool calls in this researcher share one hard ceiling.
+        state.source_call_count += 1
+        state.source_signature_counts[signature] = identical_count + 1
+        result = await handler(request)
+
+        if state.source_call_count >= budget:
+            self._mark_exhausted(state, "total source-call budget")
+            logger.info(
+                "Researcher source-call budget reached | invocation=%s depth=%s tool=%s calls=%d/%d",
+                state.invocation_id,
+                state.depth,
+                tool_name,
+                state.source_call_count,
+                budget,
+            )
+            return self._append_nudge(result)
+        return result
+
+
 class ConsecutiveThinkGuardMiddleware(AgentMiddleware):
-    """Break infinite think-loops by injecting a corrective nudge after N consecutive think calls.
+    """Nudge pure think-loops; researcher counts are isolated per invocation.
 
-    When the LLM calls ``think`` repeatedly with no intervening action tool, its context
-    never changes and it loops indefinitely. This middleware detects that pattern and overwrites
-    the ``think`` result with a warning that instructs the model to call a real tool next.
-
-    Each instance is created per-request (inside ``build_adaptive_research_graph``), so
-    ``self._consecutive_think_count`` is safe under concurrent requests.
+    This guard intentionally detects only uninterrupted ``think`` calls. Alternating source
+    calls are bounded separately by ``ResearcherLoopGuardMiddleware``.
     """
 
     def __init__(self, *, max_consecutive_thinks: int = _DEFAULT_MAX_CONSECUTIVE_THINKS) -> None:
         self._max = max_consecutive_thinks
+        # Fallback for orchestrator/planner/writer instances that have no researcher context.
         self._consecutive_think_count = 0
 
     async def awrap_tool_call(self, request, handler):
@@ -306,23 +445,33 @@ class ConsecutiveThinkGuardMiddleware(AgentMiddleware):
         if tool_call is not None:
             name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", None)
 
-        if name == _THINK_TOOL:
-            self._consecutive_think_count += 1
+        state = CURRENT_RESEARCHER_GUARD_STATE.get()
+        if state is not None:
+            if name == _THINK_TOOL:
+                state.consecutive_think_count += 1
+            else:
+                state.consecutive_think_count = 0
+            count = state.consecutive_think_count
         else:
-            self._consecutive_think_count = 0
+            if name == _THINK_TOOL:
+                self._consecutive_think_count += 1
+            else:
+                self._consecutive_think_count = 0
+            count = self._consecutive_think_count
 
         result = await handler(request)
 
-        if name == _THINK_TOOL and self._consecutive_think_count >= self._max:
+        if name == _THINK_TOOL and count >= self._max:
+            if state is not None:
+                state.think_blocked = True
             warning = (
-                f"Thought recorded. WARNING: You have called 'think' "
-                f"{self._consecutive_think_count} times in a row without taking action. "
-                "You MUST now call a real tool (e.g., run_research_batch, a search/retrieval "
-                "tool, or submit_final_report) instead of thinking again."
+                f"Thought recorded. WARNING: You have called 'think' {count} times in a row "
+                "without taking action. You MUST now call a real tool or return your structured "
+                "response instead of thinking again."
             )
             logger.warning(
                 "ConsecutiveThinkGuardMiddleware: %d consecutive think calls — injecting corrective nudge",
-                self._consecutive_think_count,
+                count,
             )
             try:
                 result = result.model_copy(update={"content": warning})

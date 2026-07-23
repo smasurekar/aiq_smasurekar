@@ -52,6 +52,7 @@ from .factory import build_adaptive_research_graph
 from .factory import build_adaptive_research_middleware_set
 from .factory import build_adaptive_research_tool_set
 from .models import AdaptiveResearchAgentState
+from .models import ResearcherLoopGuardConfig
 from .tools.finalize import EFFORT_TIER_PATH
 from .tools.finalize import FINAL_REPORT_META_PATH
 from .tools.finalize import FINAL_REPORT_PATH
@@ -97,6 +98,7 @@ class AdaptiveResearcherAgent:
         single_loop_single_shot: bool = False,
         single_shot_search_budget: int = DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         dynamic_orchestrator_sections: bool = False,
+        researcher_loop_guard: ResearcherLoopGuardConfig | None = None,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
         job_id: str | None = None,
@@ -126,6 +128,8 @@ class AdaptiveResearcherAgent:
             dynamic_orchestrator_sections: Render the orchestrator prompt trimmed per declared tier
                 (minimal router prompt on turn 1, per-tier prompt swapped in after declare_effort_tier).
                 Off by default renders the full prompt once at build time, exactly as before.
+            researcher_loop_guard: Hard per-researcher source-call, repeated-call, and consecutive-think
+                limits. Defaults to enabled budgets aligned with the researcher prompt.
             skills: Optional DeepAgents skills config.
             sandbox: Optional DeepAgents sandbox config.
             job_id: Optional async job identifier used to scope sandbox backends.
@@ -149,6 +153,7 @@ class AdaptiveResearcherAgent:
         self.single_loop_single_shot = single_loop_single_shot
         self.single_shot_search_budget = single_shot_search_budget
         self.dynamic_orchestrator_sections = dynamic_orchestrator_sections
+        self.researcher_loop_guard = researcher_loop_guard or ResearcherLoopGuardConfig()
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -177,6 +182,7 @@ class AdaptiveResearcherAgent:
             self.middleware_set = build_adaptive_research_middleware_set(
                 tool_set=self.tool_set,
                 source_registry_middleware=self.source_registry_middleware,
+                researcher_loop_guard=self.researcher_loop_guard,
                 enable_source_router=self.enable_source_router,
                 artifact_manager=self.deepagents_runtime.artifact_manager,
                 direct_source_tool_names=direct_source_tool_names,
@@ -240,6 +246,7 @@ class AdaptiveResearcherAgent:
             single_loop_single_shot=self.single_loop_single_shot,
             single_shot_search_budget=self.single_shot_search_budget,
             dynamic_orchestrator_sections=self.dynamic_orchestrator_sections,
+            researcher_loop_guard=self.researcher_loop_guard,
         )
 
     @staticmethod

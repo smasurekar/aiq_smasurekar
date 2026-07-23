@@ -63,8 +63,10 @@ from aiq_agent.common import LLMRole
 from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .custom_middleware import ComplexityRouterMiddleware
 from .custom_middleware import ConsecutiveThinkGuardMiddleware
+from .custom_middleware import ResearcherLoopGuardMiddleware
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
+from .models import ResearcherLoopGuardConfig
 from .tiers import SECTION_PRESETS
 from .tiers import enabled_tier_profiles
 from .tiers import sections_for_tier
@@ -125,6 +127,7 @@ def build_adaptive_research_middleware_set(
     *,
     tool_set: DeepResearchToolSet,
     source_registry_middleware: SourceRegistryMiddleware,
+    researcher_loop_guard: ResearcherLoopGuardConfig,
     enable_source_router: bool = False,
     artifact_manager: object | None = None,
     direct_source_tool_names: frozenset[str] | set[str] = frozenset(),
@@ -139,8 +142,22 @@ def build_adaptive_research_middleware_set(
             extra_valid_tool_names=extra_valid_tool_names,
         )
 
+    researcher_middleware = common()
+    tool_retry_index = next(
+        index for index, middleware in enumerate(researcher_middleware) if isinstance(middleware, ToolRetryMiddleware)
+    )
+    researcher_middleware[tool_retry_index:tool_retry_index] = [
+        ResearcherLoopGuardMiddleware(
+            source_tool_names=tool_set.source_tool_names,
+            config=researcher_loop_guard,
+        ),
+        ConsecutiveThinkGuardMiddleware(
+            max_consecutive_thinks=researcher_loop_guard.max_consecutive_thinks,
+        ),
+    ]
+
     return DeepResearchMiddlewareSet(
-        researcher=[*common(), ConsecutiveThinkGuardMiddleware()],
+        researcher=researcher_middleware,
         planner=[*common(), ConsecutiveThinkGuardMiddleware()],
         writer=[*common(), ConsecutiveThinkGuardMiddleware()],
         orchestrator=build_adaptive_orchestrator_middleware(
@@ -165,6 +182,7 @@ def build_adaptive_research_graph(
     domain_catalog_path: str | None,
     max_research_concurrency: int,
     enabled_tiers: list[str],
+    researcher_loop_guard: ResearcherLoopGuardConfig,
     enforce_tier_tools: bool = False,
     enable_source_router: bool = False,
     single_loop_single_shot: bool = False,
@@ -227,6 +245,9 @@ def build_adaptive_research_graph(
             "researcher",
             tools=context.tool_set.tools_info,
             execution_enabled=context.runtime.execution_enabled,
+            researcher_source_call_budgets=researcher_loop_guard.source_call_budgets.model_dump(),
+            researcher_max_identical_source_calls=researcher_loop_guard.max_identical_source_calls,
+            researcher_loop_guard_enabled=researcher_loop_guard.enabled,
         ),
         researcher_middleware=context.middleware_set.researcher,
         skill_sources=context.skill_sources(RESEARCHER_AGENT),
