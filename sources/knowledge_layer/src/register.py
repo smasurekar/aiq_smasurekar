@@ -664,7 +664,8 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
             description=(
                 "Search the knowledge base for relevant documents. "
                 "Use this to find information from ingested PDFs, documents, and other files. "
-                f"Returns up to {top_k} relevant excerpts with citations."
+                f"Returns up to {top_k} relevant excerpts with citations. "
+                "Accepts a single `query` string parameter (not `queries`)."
             ),
         )
     finally:
