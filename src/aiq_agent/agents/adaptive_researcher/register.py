@@ -127,6 +127,18 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "rollout safety; enable in config once A/B evals confirm single_shot parity."
         ),
     )
+    dynamic_orchestrator_sections: bool = Field(
+        default=False,
+        description=(
+            "Token optimization: trim the orchestrator prompt to only the sections a tier needs. "
+            "When on, turn 1 uses a minimal 'router' prompt (tier selection only); once the model "
+            "calls declare_effort_tier, ComplexityRouterMiddleware swaps in the per-tier trimmed "
+            "prompt for the rest of the run, so cheap direct/single_shot runs stop paying for the "
+            "deep/writer/delta machinery. Off by default: with it off the full prompt is rendered "
+            "once at build time exactly as before. Parent-report delta rewrites always use the full "
+            "delta prompt and are never routed."
+        ),
+    )
     single_shot_researcher_llm: LLMRef | None = Field(
         default=None,
         description=(
@@ -238,6 +250,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         enabled_tiers=config.enabled_tiers,
         enforce_tier_tools=config.enforce_tier_tools,
         single_loop_single_shot=config.single_loop_single_shot,
+        dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
@@ -274,6 +287,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     enabled_tiers=config.enabled_tiers,
                     enforce_tier_tools=config.enforce_tier_tools,
                     single_loop_single_shot=config.single_loop_single_shot,
+                    dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
                     skills=skills_config,
                     sandbox=sandbox_config,
                     job_id=job_id,

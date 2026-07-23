@@ -79,7 +79,7 @@ functions:
     _type: knowledge_retrieval
     backend: foundational_rag
     collection_name: ${COLLECTION_NAME:-kg_rag}
-    top_k: 5
+    top_k: 3
     rag_url: ${RAG_SERVER_URL:-http://localhost:8081}
     ingest_url: ${RAG_INGEST_URL:-http://localhost:8082}
     timeout: 300
@@ -95,6 +95,7 @@ functions:
     enabled_tiers: [direct, single_shot, standard, deep]
     enforce_tier_tools: false
     single_loop_single_shot: true
+    dynamic_orchestrator_sections: true
     enable_source_router: false
     exclude_tools:
       - web_search_tool

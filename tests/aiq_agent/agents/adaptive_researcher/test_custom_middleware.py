@@ -299,6 +299,85 @@ class TestTierCachingIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic per-tier prompt swap (prompt_renderer)
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicPromptSwap:
+    """When a prompt_renderer is supplied, the middleware swaps the system message to the
+    declared tier's prompt on model calls; without one it only ever overrides tools.
+    """
+
+    def _model_request(self):
+        req = MagicMock()
+        req.tools = [_make_tool("run_research_batch")]
+        req.override = MagicMock(return_value=req)
+        return req
+
+    @pytest.mark.asyncio
+    async def test_no_swap_before_tier_declared(self):
+        mw = ComplexityRouterMiddleware(
+            enabled_tiers=["single_shot", "deep"],
+            prompt_renderer=lambda tier: f"PROMPT[{tier}]",
+        )
+        req = self._model_request()
+        await mw.awrap_model_call(req, AsyncMock(return_value=MagicMock()))
+        # tier unknown on turn 1 -> tools filtered but system prompt left intact
+        assert "system_message" not in req.override.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_swaps_system_message_after_declaration(self):
+        mw = ComplexityRouterMiddleware(
+            enabled_tiers=["single_shot", "deep"],
+            prompt_renderer=lambda tier: f"PROMPT[{tier}]",
+        )
+        await mw.awrap_tool_call(_declare_tier_request("single_shot"), AsyncMock(return_value="ok"))
+        req = self._model_request()
+        await mw.awrap_model_call(req, AsyncMock(return_value=MagicMock()))
+        swapped = req.override.call_args.kwargs["system_message"]
+        assert swapped.content == "PROMPT[single_shot]"
+
+    @pytest.mark.asyncio
+    async def test_render_is_memoized_per_tier(self):
+        calls = []
+
+        def renderer(tier):
+            calls.append(tier)
+            return f"PROMPT[{tier}]"
+
+        mw = ComplexityRouterMiddleware(enabled_tiers=["single_shot", "deep"], prompt_renderer=renderer)
+        await mw.awrap_tool_call(_declare_tier_request("single_shot"), AsyncMock(return_value="ok"))
+        for _ in range(3):
+            await mw.awrap_model_call(self._model_request(), AsyncMock(return_value=MagicMock()))
+        assert calls == ["single_shot"]  # rendered once, reused across model calls
+
+    @pytest.mark.asyncio
+    async def test_escalation_rerenders_for_new_tier(self):
+        mw = ComplexityRouterMiddleware(
+            enabled_tiers=["single_shot", "deep"],
+            prompt_renderer=lambda tier: f"PROMPT[{tier}]",
+        )
+        await mw.awrap_tool_call(_declare_tier_request("single_shot"), AsyncMock(return_value="ok"))
+        req1 = self._model_request()
+        await mw.awrap_model_call(req1, AsyncMock(return_value=MagicMock()))
+        assert req1.override.call_args.kwargs["system_message"].content == "PROMPT[single_shot]"
+        # model steps up and re-declares -> next model call renders the deeper prompt
+        await mw.awrap_tool_call(_declare_tier_request("deep"), AsyncMock(return_value="ok"))
+        req2 = self._model_request()
+        await mw.awrap_model_call(req2, AsyncMock(return_value=MagicMock()))
+        assert req2.override.call_args.kwargs["system_message"].content == "PROMPT[deep]"
+
+    @pytest.mark.asyncio
+    async def test_no_renderer_never_swaps_prompt(self):
+        # Default (flag off / other wiring reasons): tools-only override, exactly as before.
+        mw = ComplexityRouterMiddleware(enabled_tiers=["single_shot", "deep"])
+        await mw.awrap_tool_call(_declare_tier_request("single_shot"), AsyncMock(return_value="ok"))
+        req = self._model_request()
+        await mw.awrap_model_call(req, AsyncMock(return_value=MagicMock()))
+        assert "system_message" not in req.override.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
 # ConsecutiveThinkGuardMiddleware
 # ---------------------------------------------------------------------------
 

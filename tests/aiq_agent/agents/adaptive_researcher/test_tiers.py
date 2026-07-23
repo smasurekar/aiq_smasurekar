@@ -21,9 +21,13 @@ from pydantic import ValidationError
 from aiq_agent.agents.adaptive_researcher.custom_middleware import hidden_tools_for_ceiling
 from aiq_agent.agents.adaptive_researcher.register import AdaptiveResearchAgentConfig
 from aiq_agent.agents.adaptive_researcher.tiers import _TIER_ORDER
+from aiq_agent.agents.adaptive_researcher.tiers import SECTION_FLAGS
+from aiq_agent.agents.adaptive_researcher.tiers import SECTION_PRESETS
 from aiq_agent.agents.adaptive_researcher.tiers import clamp_to_enabled_tiers
 from aiq_agent.agents.adaptive_researcher.tiers import enabled_tier_profiles
+from aiq_agent.agents.adaptive_researcher.tiers import escalation_possible
 from aiq_agent.agents.adaptive_researcher.tiers import normalize_enabled_tiers
+from aiq_agent.agents.adaptive_researcher.tiers import sections_for_tier
 from aiq_agent.agents.adaptive_researcher.tiers import tier_ceiling
 
 
@@ -111,3 +115,61 @@ class TestEnabledTiersConfig:
     def test_unknown_tier_rejected(self):
         with pytest.raises(ValidationError):
             AdaptiveResearchAgentConfig(orchestrator_llm="llm", enabled_tiers=["turbo"])
+
+    def test_dynamic_orchestrator_sections_default_off(self):
+        config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+        assert config.dynamic_orchestrator_sections is False
+
+
+class TestSectionPresets:
+    """Dynamic per-tier prompt sections: SECTION_PRESETS + sections_for_tier()."""
+
+    ALL_MODES = ("router", "direct", "single_shot", "standard", "deep", "delta")
+
+    def test_every_mode_expands_to_full_flag_set(self):
+        # sections_for_tier must return every flag (in SECTION_FLAGS), so rendering is
+        # deterministic and no template flag is left undefined.
+        for mode in self.ALL_MODES:
+            resolved = sections_for_tier(mode, enabled=["direct", "single_shot", "standard", "deep"])
+            assert set(resolved) == set(SECTION_FLAGS)
+            assert all(isinstance(v, bool) for v in resolved.values())
+
+    def test_preset_flags_are_known(self):
+        # No preset may reference a flag the template doesn't understand.
+        for mode, on_flags in SECTION_PRESETS.items():
+            assert on_flags <= set(SECTION_FLAGS), mode
+
+    def test_router_selects_but_does_not_execute(self):
+        r = sections_for_tier("router", enabled=["direct", "single_shot", "standard", "deep"])
+        assert r["effort_catalog"] and r["effort_selection"]
+        assert not r["workflow"] and not r["research_loop"] and not r["subagents"]
+
+    def test_cheap_tiers_drop_selection_and_subagents(self):
+        for mode in ("direct", "single_shot"):
+            s = sections_for_tier(mode, enabled=["direct", "single_shot", "standard", "deep"])
+            assert not s["effort_catalog"] and not s["effort_selection"]
+            assert not s["subagents"]
+
+    def test_deep_and_delta_carry_subagents(self):
+        for mode in ("deep", "delta"):
+            s = sections_for_tier(mode, enabled=["direct", "single_shot", "standard", "deep"])
+            assert s["subagents"] and s["workflow"]
+        assert sections_for_tier("delta", enabled=["deep"])["delta_rule"]
+        assert not sections_for_tier("deep", enabled=["deep"])["delta_rule"]
+
+    def test_escalation_resolves_against_enabled_tiers(self):
+        # a higher tier exists -> escalation section kept
+        assert sections_for_tier("single_shot", enabled=["single_shot", "deep"])["escalation"]
+        # single_shot is the ceiling -> nothing to escalate to
+        assert not sections_for_tier("single_shot", enabled=["single_shot"])["escalation"]
+        # deep never advertises escalation regardless of enabled set
+        assert not sections_for_tier("deep", enabled=["deep"])["escalation"]
+
+
+class TestEscalationPossible:
+    def test_true_when_higher_tier_enabled(self):
+        assert escalation_possible("single_shot", ["single_shot", "standard", "deep"]) is True
+
+    def test_false_at_ceiling(self):
+        assert escalation_possible("deep", ["single_shot", "deep"]) is False
+        assert escalation_possible("single_shot", ["single_shot"]) is False

@@ -134,3 +134,147 @@ def enabled_tier_profiles(enabled: list[str] | None) -> list[TierProfile]:
 def tier_ceiling(enabled: list[str] | None) -> str:
     """Return the highest-effort enabled tier (the deep-most tier the agent may reach)."""
     return normalize_enabled_tiers(enabled)[-1]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic prompt sections (opt-in via ``dynamic_orchestrator_sections``)
+# ---------------------------------------------------------------------------
+# The orchestrator prompt (orchestrator.j2) wraps every logical block in
+# ``{% if S.get('<flag>', True) %}`` so it can be trimmed per effort tier. To avoid
+# re-sending the full deep/writer/delta machinery on cheap ``direct``/``single_shot``
+# runs, we render only the sections a given mode needs.
+#
+# Flow (see misc/adaptive_orchestrator_dynamic_sections_plan.md):
+#   * Turn 1 uses the "router" mode — a minimal prompt that only teaches tier selection.
+#   * Once the model calls ``declare_effort_tier``, ComplexityRouterMiddleware swaps in the
+#     trimmed prompt for the declared tier (or "delta" for parent-report rewrites).
+
+# Every section flag the template understands, in template render order. Listing them here
+# (a) makes a preset that forgets a flag obvious, and (b) lets ``sections_for_tier`` build a
+# deterministic, fully-populated map so the same mode always renders a byte-identical prefix
+# (required for prompt KV-cache stability across a run's model calls).
+SECTION_FLAGS: tuple[str, ...] = (
+    "intro",
+    "effort_catalog",
+    "effort_selection",
+    "research_depth",
+    "delta_rule",
+    "subagents",
+    "research_routing",
+    "filesystem",
+    "sequential_handoffs",
+    "workflow",
+    "research_loop",
+    "escalation",
+    "stopping",
+    "finalize",
+    "citation_contract",
+    "important",
+)
+
+# One entry per prompt "mode": the set of sections that are ON for that mode. Every flag not
+# listed is OFF. Encodes the tier→sections table in the design doc (§3). Modeling presets as
+# ON-sets (rather than full boolean dicts) keeps them short and hard to misread.
+#
+#   router      — turn-1 selection only: how to pick a tier + declare it (no execution).
+#   direct      — no research; answer inline via the ### direct workflow block, then finalize.
+#   single_shot — one inline retrieval batch; needs the research loop + inline citation rules.
+#   standard    — union of the inline and writer branches (so either path is fully specified):
+#                 inline needs citation rules; the writer branch needs subagents/filesystem/handoffs.
+#   deep        — full plan → research → writer pipeline (no inline citation rules; writer owns those).
+#   delta       — parent-report rewrite: the deep machinery PLUS the delta rule. Never inline.
+#
+# ``escalation`` is listed for tiers that *could* step up; sections_for_tier() drops it when no
+# higher tier is enabled (nothing to escalate to).
+SECTION_PRESETS: dict[str, frozenset[str]] = {
+    "router": frozenset({"intro", "effort_catalog", "effort_selection", "delta_rule", "finalize", "important"}),
+    "direct": frozenset({"intro", "workflow", "finalize", "important"}),
+    "single_shot": frozenset(
+        {
+            "intro",
+            "research_depth",
+            "research_routing",
+            "workflow",
+            "research_loop",
+            "escalation",
+            "stopping",
+            "finalize",
+            "citation_contract",
+            "important",
+        }
+    ),
+    "standard": frozenset(
+        {
+            "intro",
+            "research_depth",
+            "subagents",
+            "research_routing",
+            "filesystem",
+            "sequential_handoffs",
+            "workflow",
+            "research_loop",
+            "escalation",
+            "stopping",
+            "finalize",
+            "citation_contract",
+            "important",
+        }
+    ),
+    "deep": frozenset(
+        {
+            "intro",
+            "research_depth",
+            "subagents",
+            "research_routing",
+            "filesystem",
+            "sequential_handoffs",
+            "workflow",
+            "research_loop",
+            "stopping",
+            "finalize",
+            "important",
+        }
+    ),
+    "delta": frozenset(
+        {
+            "intro",
+            "research_depth",
+            "delta_rule",
+            "subagents",
+            "research_routing",
+            "filesystem",
+            "sequential_handoffs",
+            "workflow",
+            "research_loop",
+            "stopping",
+            "finalize",
+            "important",
+        }
+    ),
+}
+
+
+def escalation_possible(tier: str, enabled: list[str] | None) -> bool:
+    """Return True when a higher enabled tier exists to step up to from ``tier``.
+
+    Used to decide whether the ``escalation`` prompt section is worth including: if the run's
+    effort maps to the deep-most enabled tier already, there is nothing to escalate to, so the
+    section is dropped. ``tier`` is snapped into the enabled set first (via
+    ``clamp_to_enabled_tiers``) so a disabled tier name still compares sensibly.
+    """
+    return _rank(tier_ceiling(enabled)) > _rank(clamp_to_enabled_tiers(tier, enabled))
+
+
+def sections_for_tier(mode: str, *, enabled: list[str] | None) -> dict[str, bool]:
+    """Expand a preset into a full ``{flag: bool}`` map for rendering orchestrator.j2.
+
+    ``mode`` is a key of ``SECTION_PRESETS`` ("router", a tier name, or "delta"). The result
+    always contains every flag in ``SECTION_FLAGS`` (in order) so rendering is deterministic
+    and byte-stable per mode. The ``escalation`` section is included only when the preset turns
+    it on *and* a higher enabled tier actually exists (``escalation_possible``).
+    """
+    on_flags = SECTION_PRESETS[mode]
+    resolved = {flag: (flag in on_flags) for flag in SECTION_FLAGS}
+    if resolved["escalation"]:
+        resolved["escalation"] = escalation_possible(mode, enabled)
+    return resolved
