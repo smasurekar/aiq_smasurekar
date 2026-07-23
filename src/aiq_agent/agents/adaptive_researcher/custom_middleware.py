@@ -54,6 +54,27 @@ logger = logging.getLogger(__name__)
 _THINK_TOOL = "think"
 _DEFAULT_MAX_CONSECUTIVE_THINKS = 3
 
+# Default single_shot search budget: the maximum number of direct source-tool calls the
+# orchestrator may make on the ``single_loop_single_shot`` ``single_shot`` path before it is
+# forced to finalize. single_shot is meant to be a 1-3 query lookup, but the "1-3 queries"
+# prompt guidance is soft and was observed being ignored (a bounded factual query ran 6+
+# sequential searches, inflating every later prompt with re-sent retrieval context). This cap
+# is the deterministic Layer-B backstop; it is configurable via ``single_shot_search_budget``.
+_DEFAULT_SINGLE_SHOT_SEARCH_BUDGET = 2
+
+# Appended (not overwritten) to the source-tool result that spends the last of the budget. We
+# append so the retrieved evidence from that final allowed search is preserved — the model
+# still needs it to synthesize — while being told, in-context, to stop searching and finalize.
+# The tool-hiding in ``_filter_tools`` is the hard guarantee; this nudge explains the why.
+_SINGLE_SHOT_BUDGET_NUDGE = (
+    "\n\n[SYSTEM — single_shot search budget reached: you have used your allotted "
+    "search calls. Do NOT search again (the search tools are now withdrawn). Call "
+    "`get_verified_sources` to obtain the citation whitelist, then write your final cited "
+    "Markdown answer and call `submit_final_report(markdown, researched=true, "
+    'tier="single_shot")`. If the gathered evidence is incomplete, answer only what it '
+    "supports and clearly note the gaps — do not keep searching for missing facts.]"
+)
+
 # Tools considered "heavier" than a given effort ceiling. When the deep-most enabled tier is
 # below these thresholds, the corresponding tools are hidden from the orchestrator's model
 # requests. These are the same knobs the POC's per-tier exposure table describes (§4.7 C).
@@ -117,6 +138,15 @@ class ComplexityRouterMiddleware(AgentMiddleware):
     tier's sections. Renders are memoized per tier so the swapped prompt is byte-stable across a
     run's model calls (KV-cache friendly) and each tier renders at most once. Re-declaring a
     higher tier (escalation) simply renders and caches that tier's larger prompt.
+
+    Finally, on the ``single_loop_single_shot`` ``single_shot`` path it enforces a **search
+    budget**: it counts direct source-tool calls (in ``awrap_tool_call``) and, once
+    ``single_shot_search_budget`` calls have been made, (a) appends a corrective nudge to the
+    result of the search that spent the budget and (b) withdraws the source tools from every
+    later model call (in ``_filter_tools``) so the model can only call ``get_verified_sources`` /
+    ``submit_final_report``. This turns the soft "1-3 queries" prompt guidance into a hard cap,
+    the dominant token-cost lever for cheap lookups. The budget is scoped to ``single_shot`` and
+    never affects ``standard`` / ``deep``, which research through ``run_research_batch``.
     """
 
     def __init__(
@@ -126,6 +156,7 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         allow_delegation: bool = False,
         direct_source_tools: list[object] | None = None,
         single_loop_single_shot: bool = False,
+        single_shot_search_budget: int = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         prompt_renderer: Callable[[str], str] | None = None,
     ) -> None:
         """Compute hidden tools, preserving the citation-safe delta writer path when needed."""
@@ -137,16 +168,36 @@ class ComplexityRouterMiddleware(AgentMiddleware):
             name for t in (direct_source_tools or []) if (name := _request_tool_name(t)) is not None
         )
         self._single_loop_single_shot = single_loop_single_shot
+        # Hard cap on single_shot direct source-tool calls before finalize is forced.
+        self._search_budget = single_shot_search_budget
         # Populated by awrap_tool_call the moment declare_effort_tier executes.
         self._declared_tier: str | None = None
+        # Running count of direct source-tool calls made on the single_shot path. Per-request
+        # (instances are built per run in build_adaptive_research_graph), so mutating it on self
+        # is concurrency-safe — same rationale as _declared_tier.
+        self._source_call_count = 0
         # Per-tier prompt swap (opt-in). None -> tools-only behavior, no system-prompt swap.
         self._prompt_renderer = prompt_renderer
         # Memoize rendered prompts per tier: byte-stable across turns, and render each tier once.
         self._rendered_prompt_cache: dict[str, str] = {}
 
     async def awrap_tool_call(self, request, handler):
-        """Intercept ``declare_effort_tier`` to cache the declared tier for tool-swap logic."""
+        """Cache the declared tier and enforce the single_shot search budget.
+
+        Two responsibilities, both keyed on the tool name read from ``request.tool_call``:
+
+        1. When ``declare_effort_tier`` fires, cache the chosen tier for the tool-swap / prompt-
+           swap logic (unchanged behavior).
+        2. On the ``single_loop_single_shot`` ``single_shot`` path, count each direct source-tool
+           call. The search still executes; but once the count reaches ``_search_budget`` we
+           *append* a corrective nudge to the returned result so the model is told, in-context,
+           to stop searching and finalize. The hard guarantee (withdrawing the search tools) is
+           applied separately in ``_filter_tools`` on the next model call — this nudge only
+           explains why the tools vanished, and it preserves the retrieved evidence by appending
+           rather than overwriting.
+        """
         tool_call = getattr(request, "tool_call", None)
+        name = None
         if tool_call is not None:
             name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", None)
             if name == _DECLARE_EFFORT_TIER_TOOL:
@@ -154,13 +205,48 @@ class ComplexityRouterMiddleware(AgentMiddleware):
                 if isinstance(args, dict) and args.get("tier"):
                     self._declared_tier = args["tier"]
                     logger.debug("ComplexityRouterMiddleware: declared tier = %s", self._declared_tier)
-        return await handler(request)
+
+        # Count this call up-front (before running it) only when it is a budgeted single_shot
+        # search, so the post-call threshold check and the next _filter_tools both see it.
+        is_budgeted_search = (
+            self._single_loop_single_shot
+            and self._declared_tier == "single_shot"
+            and name is not None
+            and name in self._direct_source_tool_names
+        )
+        if is_budgeted_search:
+            self._source_call_count += 1
+
+        result = await handler(request)
+
+        # If this search spent the last of the budget, append the finalize nudge to its result.
+        # `>=` (not `==`) so parallel calls in one turn that overshoot the budget still nudge.
+        if is_budgeted_search and self._source_call_count >= self._search_budget:
+            logger.info(
+                "ComplexityRouterMiddleware: single_shot search budget reached "
+                "(%d/%d) — withdrawing search tools and nudging to finalize",
+                self._source_call_count,
+                self._search_budget,
+            )
+            try:
+                result = result.model_copy(update={"content": f"{result.content}{_SINGLE_SHOT_BUDGET_NUDGE}"})
+            except Exception:
+                # Non-Pydantic / immutable result: the tool-hiding in _filter_tools still
+                # enforces the cap, so a missing nudge is a soft degradation, not a failure.
+                pass
+        return result
 
     def _filter_tools(self, tools: list[object]) -> list[object]:
         """Return the tool list filtered by ceiling rules and the single-shot swap when active."""
         if self._single_loop_single_shot and self._direct_source_tool_names:
             if self._declared_tier == "single_shot":
-                # Collapse path: expose source tools, remove run_research_batch
+                if self._source_call_count >= self._search_budget:
+                    # Budget spent: also withdraw the source tools so the model *cannot* search
+                    # again. Only get_verified_sources + submit_final_report (and the other
+                    # helper/finalize tools) remain, forcing the run to synthesize and finish.
+                    hidden = {_RUN_RESEARCH_BATCH_TOOL} | self._direct_source_tool_names
+                    return [t for t in tools if _request_tool_name(t) not in hidden]
+                # Collapse path (within budget): expose source tools, remove run_research_batch
                 return [t for t in tools if _request_tool_name(t) != _RUN_RESEARCH_BATCH_TOOL]
             else:
                 # Tier not yet declared or non-single_shot: hide source tools,

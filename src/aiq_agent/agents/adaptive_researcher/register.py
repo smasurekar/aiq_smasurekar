@@ -54,6 +54,7 @@ from nat.data_models.function import FunctionBaseConfig
 from .agent import DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS
 from .agent import DEFAULT_MAX_RESEARCH_CONCURRENCY
 from .agent import DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE
+from .agent import DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .agent import AdaptiveResearcherAgent
 from .models import AdaptiveResearchAgentState
 
@@ -137,6 +138,19 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "deep/writer/delta machinery. Off by default: with it off the full prompt is rendered "
             "once at build time exactly as before. Parent-report delta rewrites always use the full "
             "delta prompt and are never routed."
+        ),
+    )
+    single_shot_search_budget: int = Field(
+        default=DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
+        ge=1,
+        description=(
+            "Hard cap on the number of direct source-tool calls the single_loop_single_shot "
+            "single_shot path may make before ComplexityRouterMiddleware withdraws the search "
+            "tools and forces the orchestrator to call get_verified_sources and finalize. "
+            "single_shot is a 1-3 query lookup; this turns that soft prompt guidance into a "
+            "deterministic cap, preventing runaway search loops that re-send accumulated "
+            "retrieval context and inflate token usage. Only applies when single_loop_single_shot "
+            "is on and the declared tier is single_shot; standard/deep are unaffected."
         ),
     )
     single_shot_researcher_llm: LLMRef | None = Field(
@@ -250,6 +264,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         enabled_tiers=config.enabled_tiers,
         enforce_tier_tools=config.enforce_tier_tools,
         single_loop_single_shot=config.single_loop_single_shot,
+        single_shot_search_budget=config.single_shot_search_budget,
         dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
         skills=skills_config,
         sandbox=sandbox_config,
@@ -287,6 +302,7 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     enabled_tiers=config.enabled_tiers,
                     enforce_tier_tools=config.enforce_tier_tools,
                     single_loop_single_shot=config.single_loop_single_shot,
+                    single_shot_search_budget=config.single_shot_search_budget,
                     dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
                     skills=skills_config,
                     sandbox=sandbox_config,

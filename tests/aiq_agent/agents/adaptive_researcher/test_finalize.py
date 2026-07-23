@@ -35,6 +35,12 @@ def _fake_backend():
 
 
 class TestSubmitFinalReportTool:
+    def test_return_direct_is_true(self):
+        # return_direct=True ends the ReAct loop at finalize, avoiding an extra discarded
+        # terminal model turn (the answer is loaded from /shared/final_report.md by run()).
+        tool = build_submit_final_report_tool(backend=None)
+        assert tool.return_direct is True
+
     @pytest.mark.asyncio
     async def test_writes_report_and_meta_researched_true(self):
         backend = _fake_backend()

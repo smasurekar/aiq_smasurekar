@@ -94,7 +94,14 @@ def build_submit_final_report_tool(*, backend: Any | None = None) -> BaseTool:
     ``files`` mapping and are readable by ``AdaptiveResearcherAgent.run()``.
     """
 
-    @tool
+    # return_direct=True ends the ReAct loop the moment this tool executes, so the framework
+    # does not spend an extra, discarded model turn just to emit a terminating (no-tool-call)
+    # AIMessage. That trailing turn is pure waste here: the authoritative answer is loaded from
+    # /shared/final_report.md by AdaptiveResearcherAgent.run(), which then overwrites the last
+    # message with the post-processed markdown. The installed LangChain create_agent routes to
+    # its exit node when every client-side tool call in a turn is return_direct; submit_final_report
+    # is always called as a lone tool call on the finalize step, so that condition holds.
+    @tool(return_direct=True)
     def submit_final_report(markdown: str, researched: bool = True, tier: str | None = None) -> str:
         """Record the final answer as the authoritative report and finish the run.
 
