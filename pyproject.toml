@@ -214,7 +214,21 @@ indent_dictionary_value = true
 #   uv pip install -e "./frontends/aiq_api[postgres]"  # With extras
 # -----------------------------------------------------------------------------
 [dependency-groups]
+# Workspace packages installed into the runtime container image. Keeping these
+# out of `dev` lets the Dockerfile sync only what the image needs
+# (`--no-dev --group runtime-tools`) instead of pulling in test-only tooling.
+runtime-tools = [
+    "google-scholar-paper-search",
+    "tavily-web-search",
+    "exa-web-search",
+    "nimble-web-search",
+    "duckduckgo-news-search",
+    "polymarket-prediction-market",
+    "knowledge-layer[all]",
+    "aiq-api",
+]
 dev = [
+    {include-group = "runtime-tools"},
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
@@ -224,17 +238,10 @@ dev = [
     "yapf>=0.40.0",
     "mypy>=1.5.0",
     "dask[distributed]>=2024.1.0",
-    # Workspace packages for testing
+    # Workspace packages for testing only — not installed into the runtime image,
+    # so they stay out of `runtime-tools` above.
     "aiq-gsf",
-    "google-scholar-paper-search",
-    "tavily-web-search",
-    "exa-web-search",
-    "nimble-web-search",
     "you-com",
-    "duckduckgo-news-search",
-    "polymarket-prediction-market",
-    "knowledge-layer[all]",
-    "aiq-api",
     "aiq-research-cli",
     "aiq-debug",
 ]
