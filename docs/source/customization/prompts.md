@@ -19,6 +19,7 @@ Each agent in the AI-Q blueprint uses [Jinja2](https://jinja.palletsprojects.com
 | `src/aiq_agent/agents/deep_researcher/prompts/source_router.j2` | Source Router | Selects an advisory route from the request-allowed source catalog before planning |
 | `src/aiq_agent/agents/deep_researcher/prompts/planner.j2` | Deep Research Planner | Grounds and returns a structured `ResearchPlan` with independent `ResearchQuery` objects |
 | `src/aiq_agent/agents/deep_researcher/prompts/researcher.j2` | Researcher Worker | Executes one `ResearchQuery` and returns structured `ResearchNotes` using preferred and fallback tools as prompt guidance |
+| `src/aiq_agent/agents/adaptive_researcher/prompts/researcher.j2` | Adaptive Researcher Worker | Declares depth-specific source-call budgets that are kept in sync with the runtime loop guard |
 | `src/aiq_agent/agents/deep_researcher/prompts/writer.j2` | Report Writer | Synthesizes the plan, research notes, and captured sources into `/shared/output.md` |
 | `src/aiq_agent/agents/deep_researcher/prompts/source_registry.j2` | Source Registry Middleware | Renders the captured source list exposed to the writer |
 | `src/aiq_agent/agents/clarifier/prompts/research_clarification.j2` | Clarifier | Determines whether a request needs clarification and asks focused follow-up questions; it does not create or approve a plan |
@@ -43,6 +44,9 @@ src/aiq_agent/agents/
             researcher.j2              # Researcher-worker prompt
             writer.j2                  # Final synthesis prompt
             source_registry.j2         # Captured-source list fragment
+    adaptive_researcher/
+        prompts/
+            researcher.j2              # Guard-aligned researcher-worker prompt
     clarifier/
         prompts/
             research_clarification.j2  # Clarification prompt

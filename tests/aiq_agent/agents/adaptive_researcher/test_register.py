@@ -79,6 +79,44 @@ def test_single_shot_search_budget_rejects_below_one():
         AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_shot_search_budget=0)
 
 
+def test_researcher_loop_guard_defaults_match_prompt_budgets():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+    guard = config.researcher_loop_guard
+    assert guard.enabled is True
+    assert guard.source_call_budgets.model_dump() == {"low": 1, "medium": 3, "high": 6}
+    assert guard.max_identical_source_calls == 2
+    assert guard.max_consecutive_thinks == 3
+
+
+def test_researcher_loop_guard_accepts_nested_overrides():
+    config = AdaptiveResearchAgentConfig(
+        orchestrator_llm="llm",
+        researcher_loop_guard={
+            "source_call_budgets": {"low": 2, "medium": 4, "high": 8},
+            "max_identical_source_calls": 1,
+            "max_consecutive_thinks": 2,
+        },
+    )
+    assert config.researcher_loop_guard.source_call_budgets.high == 8
+    assert config.researcher_loop_guard.max_identical_source_calls == 1
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        {"source_call_budgets": {"low": 0, "medium": 3, "high": 6}},
+        {"source_call_budgets": {"low": 4, "medium": 3, "high": 6}},
+        {"max_identical_source_calls": 0},
+        {"unknown_option": True},
+    ],
+)
+def test_researcher_loop_guard_rejects_invalid_configuration(guard):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AdaptiveResearchAgentConfig(orchestrator_llm="llm", researcher_loop_guard=guard)
+
+
 @pytest.mark.asyncio
 async def test_workflow_wrapper_invokes_adaptive_agent_by_name():
     """The workflow wrapper looks up adaptive_research_agent by fixed name and wraps a string query."""

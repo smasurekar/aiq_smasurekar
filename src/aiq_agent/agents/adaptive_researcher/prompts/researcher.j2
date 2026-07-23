@@ -47,9 +47,12 @@ Your output will be used to write a cited final answer. Produce **in-depth, deta
 
 ## Research Depth (search budget)
 The ResearchQuery JSON carries a `depth` field (`low` | `medium` | `high`) set by the orchestrator/planner. It controls how much *sequential iteration* you spend on THIS query; it is independent of `subqueries` (which are optional *parallel* facets). If `depth` is absent, treat it as `medium`. Scale your source-tool effort to it:
-- **`low`** — Make **one** primary source-tool call, assess, and return `ResearchNotes` immediately. Do not run fallback, corroboration, or follow-up calls. Skip the `/shared/plan.json` read (step 2); you may also skip the skill check (step 6) unless a skill obviously applies. Record anything unresolved as a gap. Use this for a simple, self-contained lookup.
-- **`medium`** (default) — One primary source-tool call, plus at most one fallback or corroboration call, plus at most one targeted follow-up after the first results, only when needed for `target_components`.
-- **`high`** — Research iteratively / multi-hop. Run a **sequence** of chained searches (up to ~4–6 sequential source-tool calls) where each result informs the next query: resolve one fact, then use it to form the next search, and so on until the reasoning chain resolves, coverage is sufficient, or the cap is reached. Use this for multi-hop questions that a single search cannot answer. Record any hop you cannot resolve as a gap instead of guessing.
+- **`low`** — Make at most **{{ researcher_source_call_budgets.low }}** primary source-tool call(s), assess, and return `ResearchNotes` immediately. Do not run fallback, corroboration, or follow-up calls. Skip the `/shared/plan.json` read (step 2); you may also skip the skill check (step 6) unless a skill obviously applies. Record anything unresolved as a gap. Use this for a simple, self-contained lookup.
+- **`medium`** (default) — Make at most **{{ researcher_source_call_budgets.medium }}** source-tool calls total: one primary call, then only the fallback, corroboration, or targeted follow-up needed for `target_components`.
+- **`high`** — Research iteratively / multi-hop with at most **{{ researcher_source_call_budgets.high }}** source-tool calls. Each result must inform the next query: resolve one fact, then use it to form the next search, and stop when the reasoning chain resolves, coverage is sufficient, or the cap is reached. Use this for multi-hop questions that a single search cannot answer. Record any hop you cannot resolve as a gap instead of guessing.
+{% if researcher_loop_guard_enabled %}
+These source-call limits are enforced by the runtime. The same normalized source request may execute at most {{ researcher_max_identical_source_calls }} time(s). Once either limit is reached, source tools and `think` are withdrawn. Return `ResearchNotes` immediately using gathered evidence and explicit `ResearchGap` entries for unsupported components.
+{% endif %}
 
 ## Tool Use
 - Use the fewest high-signal source-tool calls needed for the assigned query, within the `depth` budget above.

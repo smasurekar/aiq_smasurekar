@@ -24,6 +24,7 @@ import logging
 import re
 from typing import Any
 from typing import cast
+from uuid import uuid4
 
 import nemo_relay
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
@@ -40,6 +41,9 @@ from ..models import EvidenceJudgment
 from ..models import ResearchGap
 from ..models import ResearchNotes
 from ..models import ResearchQuery
+from ..researcher_context import CURRENT_RESEARCHER_GUARD_STATE
+from ..researcher_context import ResearcherRunGuardState
+from ..researcher_context import normalize_research_depth
 from ..resource_limits import DeepResearchResourceLimits
 from ..resource_limits import StateBudgetLedger
 
@@ -125,6 +129,12 @@ async def _run_research_query(
     """Run one researcher worker and return its structured notes."""
     async with semaphore:
         with agent_scope(RESEARCHER_AGENT_NAME, input_value=query) as lifecycle:
+        guard_state = ResearcherRunGuardState(
+            invocation_id=uuid4().hex,
+            depth=normalize_research_depth(getattr(query, "depth", None)),
+        )
+        guard_token = CURRENT_RESEARCHER_GUARD_STATE.set(guard_state)
+        try:
             try:
                 result = await researcher_runnable.ainvoke(
                     researcher_invoke_state(query, runtime),
@@ -143,6 +153,8 @@ async def _run_research_query(
                     log_content_metadata(query.query),
                 )
                 raise RuntimeError("researcher worker failed") from exc
+            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
 
             try:
                 structured = result.get("structured_response") if isinstance(result, dict) else None
@@ -161,6 +173,16 @@ async def _run_research_query(
 
             lifecycle.output = note
             return note
+                    raise ValueError("researcher worker did not return structured ResearchNotes")
+                note = ResearchNotes.model_validate(structured)
+            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                raise ValueError(
+                    f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
+                ) from exc
+
+            return note
+        finally:
+            CURRENT_RESEARCHER_GUARD_STATE.reset(guard_token)
 
 
 def _research_note_slug(text: str) -> str:
