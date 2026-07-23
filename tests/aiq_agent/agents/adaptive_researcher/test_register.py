@@ -60,6 +60,25 @@ def test_single_loop_single_shot_can_be_enabled():
     assert config.single_loop_single_shot is True
 
 
+def test_single_shot_search_budget_defaults_to_two():
+    from aiq_agent.agents.adaptive_researcher.agent import DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
+
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+    assert config.single_shot_search_budget == DEFAULT_SINGLE_SHOT_SEARCH_BUDGET == 2
+
+
+def test_single_shot_search_budget_can_be_overridden():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_shot_search_budget=4)
+    assert config.single_shot_search_budget == 4
+
+
+def test_single_shot_search_budget_rejects_below_one():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_shot_search_budget=0)
+
+
 @pytest.mark.asyncio
 async def test_workflow_wrapper_invokes_adaptive_agent_by_name():
     """The workflow wrapper looks up adaptive_research_agent by fixed name and wraps a string query."""

@@ -47,6 +47,7 @@ from aiq_agent.common.citation_verification import sanitize_report
 from aiq_agent.common.citation_verification import source_entries_from_parent_context
 from aiq_agent.common.citation_verification import verify_citations
 
+from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .factory import build_adaptive_research_graph
 from .factory import build_adaptive_research_middleware_set
 from .factory import build_adaptive_research_tool_set
@@ -58,6 +59,9 @@ from .tools.finalize import FINAL_REPORT_PATH
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RESEARCH_CONCURRENCY = 6
+# Re-export the middleware's single_shot search-budget default so register.py and callers have a
+# public name to reference (the middleware constant is the single source of truth for its value).
+DEFAULT_SINGLE_SHOT_SEARCH_BUDGET = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 PARENT_REPORT_CONTEXT_PATH = "/shared/parent_report_context.json"
 
 # Path to this agent's directory (for loading prompts)
@@ -91,6 +95,7 @@ class AdaptiveResearcherAgent:
         enabled_tiers: list[str] | None = None,
         enforce_tier_tools: bool = False,
         single_loop_single_shot: bool = False,
+        single_shot_search_budget: int = DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         dynamic_orchestrator_sections: bool = False,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
@@ -115,6 +120,9 @@ class AdaptiveResearcherAgent:
             enforce_tier_tools: Enable Layer-B ceiling-based tool hiding via ComplexityRouterMiddleware.
             single_loop_single_shot: Collapse single_shot to a direct-tool single loop, bypassing
                 the researcher subagent. Requires enforce_tier_tools or auto-enables the middleware.
+            single_shot_search_budget: Max direct source-tool calls the single_loop_single_shot
+                single_shot path may make before ComplexityRouterMiddleware withdraws the search
+                tools and forces finalize. Caps runaway search loops on cheap lookups.
             dynamic_orchestrator_sections: Render the orchestrator prompt trimmed per declared tier
                 (minimal router prompt on turn 1, per-tier prompt swapped in after declare_effort_tier).
                 Off by default renders the full prompt once at build time, exactly as before.
@@ -139,6 +147,7 @@ class AdaptiveResearcherAgent:
         self.enabled_tiers = list(enabled_tiers) if enabled_tiers else ["direct", "single_shot", "standard", "deep"]
         self.enforce_tier_tools = enforce_tier_tools
         self.single_loop_single_shot = single_loop_single_shot
+        self.single_shot_search_budget = single_shot_search_budget
         self.dynamic_orchestrator_sections = dynamic_orchestrator_sections
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
@@ -229,6 +238,7 @@ class AdaptiveResearcherAgent:
             enabled_tiers=self.enabled_tiers,
             enforce_tier_tools=self.enforce_tier_tools,
             single_loop_single_shot=self.single_loop_single_shot,
+            single_shot_search_budget=self.single_shot_search_budget,
             dynamic_orchestrator_sections=self.dynamic_orchestrator_sections,
         )
 
