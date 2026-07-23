@@ -21,7 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _DECLARE_EFFORT_TIER_TOOL
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _RUN_RESEARCH_BATCH_TOOL
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _SINGLE_SHOT_BUDGET_NUDGE
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _THINK_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ComplexityRouterMiddleware
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ConsecutiveThinkGuardMiddleware
@@ -375,6 +377,164 @@ class TestDynamicPromptSwap:
         req = self._model_request()
         await mw.awrap_model_call(req, AsyncMock(return_value=MagicMock()))
         assert "system_message" not in req.override.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# Single-shot search budget (hard cap on direct source-tool calls)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleShotSearchBudget:
+    """The single_loop_single_shot single_shot path caps direct source-tool calls.
+
+    Once the budget is spent the middleware (a) appends a finalize nudge to the search result
+    that spent it and (b) withdraws the source tools from later model calls. standard / deep,
+    and any run before single_shot is declared, are never counted or capped.
+    """
+
+    def setup_method(self):
+        # Two configured source tools; the orchestrator also holds helper / finalize tools.
+        self.direct_source_tools = [
+            _make_tool("knowledge_search"),
+            _make_tool("web_search_tool"),
+        ]
+        self.orchestrator_tools = [
+            _make_tool("run_research_batch"),
+            _make_tool("get_verified_sources"),
+            _make_tool("declare_effort_tier"),
+            _make_tool("submit_final_report"),
+            _make_tool("knowledge_search"),
+            _make_tool("web_search_tool"),
+        ]
+
+    def _mw(self, *, budget: int = 2, declared_tier: str | None = "single_shot") -> ComplexityRouterMiddleware:
+        mw = ComplexityRouterMiddleware(
+            enabled_tiers=["direct", "single_shot", "standard", "deep"],
+            direct_source_tools=self.direct_source_tools,
+            single_loop_single_shot=True,
+            single_shot_search_budget=budget,
+        )
+        mw._declared_tier = declared_tier
+        return mw
+
+    # --- counting -----------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_counter_increments_on_source_tool_call(self):
+        mw = self._mw(budget=5)
+        handler = AsyncMock(return_value=_tool_message("search results"))
+        await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        assert mw._source_call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_counter_ignores_helper_tools(self):
+        mw = self._mw(budget=5)
+        handler = AsyncMock(return_value=_tool_message("sources"))
+        await mw.awrap_tool_call(_other_tool_request("get_verified_sources"), handler)
+        assert mw._source_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_counter_ignores_before_single_shot_declared(self):
+        mw = self._mw(budget=5, declared_tier=None)
+        handler = AsyncMock(return_value=_tool_message("search results"))
+        await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        assert mw._source_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_counter_ignores_on_standard_tier(self):
+        mw = self._mw(budget=5, declared_tier="standard")
+        handler = AsyncMock(return_value=_tool_message("search results"))
+        await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        assert mw._source_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_handler_always_called_for_source_call(self):
+        mw = self._mw(budget=2)
+        handler = AsyncMock(return_value=_tool_message("search results"))
+        await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        handler.assert_awaited_once()
+
+    # --- nudge --------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_nudge_appended_at_threshold_preserves_content(self):
+        mw = self._mw(budget=2)
+        handler = AsyncMock(return_value=_tool_message("original retrieval"))
+        await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)  # 1/2
+        result = await mw.awrap_tool_call(_other_tool_request("web_search_tool"), handler)  # 2/2
+        # Original evidence preserved (appended, not overwritten) + nudge present.
+        assert result.content.startswith("original retrieval")
+        assert _SINGLE_SHOT_BUDGET_NUDGE in result.content
+
+    @pytest.mark.asyncio
+    async def test_no_nudge_below_threshold(self):
+        mw = self._mw(budget=2)
+        handler = AsyncMock(return_value=_tool_message("original retrieval"))
+        result = await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)  # 1/2
+        assert result.content == "original retrieval"
+
+    @pytest.mark.asyncio
+    async def test_graceful_on_immutable_result_at_threshold(self):
+        """If model_copy raises, the budget is still enforced via _filter_tools; return original."""
+        mw = self._mw(budget=1)
+        msg = MagicMock()
+        msg.content = "original retrieval"
+        msg.model_copy = MagicMock(side_effect=AttributeError("immutable"))
+        handler = AsyncMock(return_value=msg)
+        result = await mw.awrap_tool_call(_other_tool_request("knowledge_search"), handler)
+        assert result is msg
+
+    # --- tool hiding --------------------------------------------------------
+
+    def test_filter_keeps_source_tools_within_budget(self):
+        mw = self._mw(budget=2)
+        mw._source_call_count = 1
+        names = {t.name for t in mw._filter_tools(self.orchestrator_tools)}
+        assert "knowledge_search" in names
+        assert "web_search_tool" in names
+        assert _RUN_RESEARCH_BATCH_TOOL not in names
+
+    def test_filter_hides_source_tools_after_budget(self):
+        mw = self._mw(budget=2)
+        mw._source_call_count = 2
+        names = {t.name for t in mw._filter_tools(self.orchestrator_tools)}
+        assert "knowledge_search" not in names
+        assert "web_search_tool" not in names
+        assert _RUN_RESEARCH_BATCH_TOOL not in names
+
+    def test_filter_keeps_finalize_tools_after_budget(self):
+        mw = self._mw(budget=2)
+        mw._source_call_count = 2
+        names = {t.name for t in mw._filter_tools(self.orchestrator_tools)}
+        assert "get_verified_sources" in names
+        assert "submit_final_report" in names
+
+    def test_custom_budget_of_one_hides_after_single_call(self):
+        mw = self._mw(budget=1)
+        mw._source_call_count = 1
+        names = {t.name for t in mw._filter_tools(self.orchestrator_tools)}
+        assert "knowledge_search" not in names
+
+    def test_standard_tier_not_capped_by_budget(self):
+        """standard keeps run_research_batch regardless of any source-call count."""
+        mw = self._mw(budget=2, declared_tier="standard")
+        mw._source_call_count = 99
+        names = {t.name for t in mw._filter_tools(self.orchestrator_tools)}
+        assert _RUN_RESEARCH_BATCH_TOOL in names
+        assert "knowledge_search" not in names
+
+    def test_source_call_count_starts_at_zero(self):
+        mw = self._mw()
+        assert mw._source_call_count == 0
+
+    def test_default_budget_constant(self):
+        # Sanity: the wired default matches the documented constant (2).
+        mw = ComplexityRouterMiddleware(
+            enabled_tiers=["single_shot"],
+            direct_source_tools=self.direct_source_tools,
+            single_loop_single_shot=True,
+        )
+        assert mw._search_budget == _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 
 
 # ---------------------------------------------------------------------------

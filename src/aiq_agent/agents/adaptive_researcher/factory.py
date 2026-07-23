@@ -60,6 +60,7 @@ from aiq_agent.agents.deep_researcher.factory import runtime_visibility_middlewa
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
+from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .custom_middleware import ComplexityRouterMiddleware
 from .custom_middleware import ConsecutiveThinkGuardMiddleware
 from .models import AdaptiveResearchAgentState
@@ -167,6 +168,7 @@ def build_adaptive_research_graph(
     enforce_tier_tools: bool = False,
     enable_source_router: bool = False,
     single_loop_single_shot: bool = False,
+    single_shot_search_budget: int = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
     dynamic_orchestrator_sections: bool = False,
 ) -> Any:
     """Build the full DeepAgents graph for one adaptive research run.
@@ -296,6 +298,9 @@ def build_adaptive_research_graph(
             "tier_profiles": enabled_tier_profiles(tiers_for_mode),
             "triage_hint": "",
             "single_loop_single_shot": single_loop_single_shot,
+            # Surfaced in the single_shot workflow block so the Layer-A prompt states the same
+            # hard cap that ComplexityRouterMiddleware enforces at the tool level (Layer-B).
+            "single_shot_search_budget": single_shot_search_budget,
         }
 
     def _render_orchestrator(mode: str) -> str:
@@ -351,6 +356,8 @@ def build_adaptive_research_graph(
                 allow_delegation=context.parent_report_context_available,
                 direct_source_tools=direct_source_tools if single_loop_single_shot else None,
                 single_loop_single_shot=single_loop_single_shot,
+                # Hard cap on single_shot direct source-tool calls before finalize is forced.
+                single_shot_search_budget=single_shot_search_budget,
                 # Only pass the renderer when dynamic sections are active; None preserves the
                 # tools-only behavior (no prompt swap) for the other wiring reasons.
                 prompt_renderer=_render_orchestrator if dynamic_sections_active else None,
