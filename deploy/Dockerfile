@@ -55,52 +55,58 @@ ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV UV_PYTHON=/app/.venv/bin/python
 
-# Copy workspace configuration and lockfile
+# Copy dependency metadata before application source so code-only changes keep
+# the third-party dependency layer cached. Workspace member metadata is needed
+# to resolve the local packages referenced by the runtime-tools group.
 COPY pyproject.toml uv.lock ./
+COPY sources/google_scholar_paper_search/pyproject.toml ./sources/google_scholar_paper_search/
+COPY sources/tavily_web_search/pyproject.toml ./sources/tavily_web_search/
+COPY sources/exa_web_search/pyproject.toml ./sources/exa_web_search/
+COPY sources/duckduckgo_news_search/pyproject.toml ./sources/duckduckgo_news_search/
+COPY sources/polymarket_prediction_market/pyproject.toml ./sources/polymarket_prediction_market/
+COPY sources/knowledge_layer/pyproject.toml ./sources/knowledge_layer/
+COPY frontends/aiq_api/pyproject.toml ./frontends/aiq_api/
 
-# Copy all source packages
+# Install release dependencies from the frozen lock without installing local
+# workspace packages. The cache mount is useful when the lockfile changes.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --extra s3 --no-dev --group runtime-tools --no-install-workspace
+
+# Copy application and workspace package sources after dependencies.
 COPY src/ ./src/
 COPY sources/ ./sources/
 COPY frontends/aiq_api/ ./frontends/aiq_api/
 COPY frontends/cli/ ./frontends/cli/
 COPY frontends/debug/ ./frontends/debug/
-COPY configs/ ./configs/
 # Only copy runtime scripts from deploy/ — never copy the full directory
 # to avoid leaking .env, Helm charts, compose files, or other dev artifacts.
 COPY deploy/entrypoint.py deploy/start_web.py ./deploy/
 
-# Install dependencies using uv sync. We do NOT pass --no-dev: the workspace
-# source packages (tavily-web-search, exa-web-search, ...) and their runtime
-# deps (e.g. langchain-tavily) are declared in the [dependency-groups] dev group,
-# so --no-dev would omit them and the editable source installs below would
-# import-fail at runtime. Syncing with the dev group installs those deps from the
-# frozen lock (still pinned, no re-resolve). TODO(deploy): move the source
-# packages to a dedicated non-dev group to keep test-only tooling out of the image.
-RUN uv sync --frozen --extra s3
-
-# Install workspace packages (without CLI for base)
+# Install release workspace packages without CLI or debug dependencies.
 RUN uv pip install --no-deps -e . \
     && uv pip install --no-deps -e ./sources/google_scholar_paper_search \
     && uv pip install --no-deps -e ./sources/tavily_web_search \
     && uv pip install --no-deps -e ./sources/exa_web_search \
+    && uv pip install --no-deps -e ./sources/duckduckgo_news_search \
+    && uv pip install --no-deps -e ./sources/polymarket_prediction_market \
     && uv pip install --no-deps -e "./sources/knowledge_layer[all]" \
-    && uv pip install --no-deps -e ./frontends/aiq_api \
-    && uv pip install "psycopg[binary]>=3.0.0"
+    && uv pip install --no-deps -e ./frontends/aiq_api
 
 RUN /app/.venv/bin/python -c "import aiq_api; import knowledge_layer; print('✓ Base packages installed')"
 
+# Config changes should not invalidate dependency or package installation.
+COPY configs/ ./configs/
+
 RUN chmod +x /app/deploy/start_web.py \
-    && mkdir -p /app/data \
-    && chown -R 1000:1000 /app
+    && install -d -o 1000 -g 1000 /app/data
 
 # =============================================================================
 # Stage 2: Development (includes CLI)
 # =============================================================================
 FROM builder AS dev-builder
 
-# Install CLI and debug UI for development
-RUN uv pip install --no-deps -e ./frontends/cli \
-    && uv pip install --no-deps -e ./frontends/debug
+# Install the default development group only in development images.
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --extra s3
 
 RUN /app/.venv/bin/python -c "import aiq_api; import aiq_research_cli; import aiq_debug; import knowledge_layer; print('✓ All packages installed')"
 

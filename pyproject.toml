@@ -194,7 +194,17 @@ indent_dictionary_value = true
 #   uv pip install -e "./frontends/aiq_api[postgres]"  # With extras
 # -----------------------------------------------------------------------------
 [dependency-groups]
+runtime-tools = [
+    "google-scholar-paper-search",
+    "tavily-web-search",
+    "exa-web-search",
+    "duckduckgo-news-search",
+    "polymarket-prediction-market",
+    "knowledge-layer[all]",
+    "aiq-api",
+]
 dev = [
+    {include-group = "runtime-tools"},
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
@@ -204,14 +214,6 @@ dev = [
     "yapf>=0.40.0",
     "mypy>=1.5.0",
     "dask[distributed]>=2024.1.0",
-    # Workspace packages for testing
-    "google-scholar-paper-search",
-    "tavily-web-search",
-    "exa-web-search",
-    "duckduckgo-news-search",
-    "polymarket-prediction-market",
-    "knowledge-layer[all]",
-    "aiq-api",
     "aiq-research-cli",
     "aiq-debug",
 ]
