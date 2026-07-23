@@ -35,14 +35,18 @@ from aiq_agent.agents.deep_researcher.models import TaskAnalysis
 
 from .loop_guard import ResearcherLoopGuardConfig
 from .loop_guard import ResearcherSourceCallBudgets
+from .request_termination import AdaptiveRequestTerminationConfig
+from .request_termination import AdaptiveTierBudgets
 from .state import AdaptiveResearchAgentState
 from .subagent_contracts import AdaptiveResearchPlan
 from .subagent_contracts import AdaptiveResearchQuery
 
 __all__ = [
+    "AdaptiveRequestTerminationConfig",
     "AdaptiveResearchAgentState",
     "AdaptiveResearchPlan",
     "AdaptiveResearchQuery",
+    "AdaptiveTierBudgets",
     "AnswerComponent",
     "AnswerStrategy",
     "Constraint",

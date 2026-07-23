@@ -43,6 +43,9 @@ llms:
     model_name: nvidia/nvidia/nemotron-3-ultra
     # model_name: nvidia/zai-org/glm-5.2
     base_url: "https://inference-api.nvidia.com/v1"
+    # Self deployed model details:
+    # model_name: nvidia/nemotron-3-ultra-550b-a55b
+    # base_url: "http://10.86.10.114:8999/v1"
     temperature: 0.7
     top_p: 0.7
     max_tokens: 65536
@@ -105,6 +108,25 @@ functions:
         high: 6
       max_identical_source_calls: 2
       max_consecutive_thinks: 3
+    # Request-wide termination envelope: bounds the whole top-level request (not just one
+    # researcher). Without this a standard/deep run can spawn fresh run_research_batch calls
+    # indefinitely — each new researcher invocation resets the per-researcher budget — so a query
+    # for evidence the sources do not hold can run for hours. These finite budgets, the hard
+    # workflow deadline, and the graph recursion ceiling guarantee a terminal state.
+    request_termination:
+      enabled: true
+      standard:
+        max_batch_calls: 3
+        max_total_research_queries: 9
+        max_orchestrator_turns: 24
+      deep:
+        max_batch_calls: 6
+        max_total_research_queries: 24
+        max_orchestrator_turns: 100
+      max_identical_research_queries: 1
+      workflow_timeout_seconds: 1200
+      fallback_finalizer_timeout_seconds: 60
+      recursion_limit: 250
     enable_source_router: false
     exclude_tools:
       - web_search_tool

@@ -41,7 +41,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import unicodedata
 from collections.abc import Callable
+from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import SystemMessage
@@ -51,6 +53,7 @@ from langchain_core.messages import ToolMessage
 from aiq_agent.agents.deep_researcher.custom_middleware import _request_tool_name
 from aiq_agent.agents.deep_researcher.researcher_context import CURRENT_RESEARCHER_GUARD_STATE
 
+from .models import AdaptiveRequestTerminationConfig
 from .models import ResearcherLoopGuardConfig
 from .tiers import tier_ceiling
 
@@ -478,3 +481,259 @@ class ConsecutiveThinkGuardMiddleware(AgentMiddleware):
             except Exception:
                 pass
         return result
+
+
+def _normalize_text(value: object) -> str:
+    """Unicode-normalize, casefold, and whitespace-collapse text for stable signatures."""
+    text = value if isinstance(value, str) else str(value)
+    text = unicodedata.normalize("NFKC", text)
+    return " ".join(text.split()).casefold()
+
+
+def _canonical_research_query_signature(query: object) -> str:
+    """Hash a delegated ResearchQuery into a normalized, content-free signature.
+
+    The signature intentionally covers only the fields that make one query *materially the
+    same* as another: the (normalized) main query text, the ordered normalized subqueries (order
+    is meaningful), the sorted target components, the sorted preferred tool names, and the depth.
+    Free-form ``rationale`` and ``fallback_tools`` are omitted so re-explaining or padding a query
+    cannot bypass duplicate detection. The query may arrive as a dict (raw LLM tool args) or a
+    Pydantic model; both are handled. Only the hash is retained — raw argument text is never kept.
+    """
+
+    def _get(field: str, default: object) -> object:
+        if isinstance(query, dict):
+            return query.get(field, default)
+        return getattr(query, field, default)
+
+    subqueries = _get("subqueries", []) or []
+    target_components = _get("target_components", []) or []
+    preferred_tools = _get("preferred_tools", []) or []
+    canonical = {
+        "query": _normalize_text(_get("query", "")),
+        # Ordered: distinct search angles are order-sensitive.
+        "subqueries": [_normalize_text(s) for s in subqueries],
+        # Unordered sets: sort so ordering differences do not create a "new" query.
+        "target_components": sorted(_normalize_text(c) for c in target_components),
+        "preferred_tools": sorted(_normalize_text(t) for t in preferred_tools),
+        "depth": _normalize_text(_get("depth", "")),
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class OrchestratorLoopGuardMiddleware(AgentMiddleware):
+    """Bound the *whole* adaptive request: research batches, delegated queries, and model turns.
+
+    The per-researcher ``ResearcherLoopGuardMiddleware`` bounds one delegated invocation, but its
+    state resets for every new invocation, so an orchestrator that keeps authoring fresh
+    ``run_research_batch`` calls can run indefinitely while every per-researcher guard fires
+    correctly. This middleware closes that gap at the orchestrator boundary.
+
+    Lifetime and concurrency: exactly one instance is built per top-level request in
+    ``build_adaptive_research_graph`` (the same lifetime as ``ComplexityRouterMiddleware``), so
+    request-scoped counters live safely on ``self``. Counters are mutated *before* awaiting the
+    tool handler, so parallel batch calls in a single turn cannot race past a limit.
+
+    Enforcement, keyed on the tier captured from ``declare_effort_tier`` (independently of
+    ``ComplexityRouterMiddleware``, which captures it via its own ``awrap_tool_call``):
+
+    - ``standard`` / ``deep`` / delta: count batches, total delegated queries, and normalized
+      per-query signatures. A batch that would exceed ``max_batch_calls`` or
+      ``max_total_research_queries``, or that repeats a normalized query beyond
+      ``max_identical_research_queries``, is **not executed** — a deterministic error
+      ``ToolMessage`` is returned and the request transitions to ``finalizing``.
+    - Once ``finalizing`` (or once model turns exceed ``max_orchestrator_turns``),
+      ``run_research_batch`` and ``think`` are withdrawn from every later model call so the
+      orchestrator can only finalize from evidence already collected.
+    - ``single_shot`` / ``direct`` / ``meta`` are inert here: they self-limit (single_shot's own
+      search budget) or perform no delegated research.
+
+    Logging is metadata-only (request tag, tier, phase, counts, hashed signature) — never raw
+    query arguments.
+    """
+
+    def __init__(self, *, config: AdaptiveRequestTerminationConfig) -> None:
+        self._config = config
+        # Short opaque per-request tag for correlating log lines without leaking content.
+        self._request_tag = uuid4().hex[:12]
+        self._declared_tier: str | None = None
+        self._phase: str = "active"
+        self._exhaustion_reason: str | None = None
+        self._batch_call_count = 0
+        self._total_query_count = 0
+        self._model_turn_count = 0
+        self._query_signature_counts: dict[str, int] = {}
+
+    # --- introspection helpers (used by the fallback and by tests) ---------------------------
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    @property
+    def exhaustion_reason(self) -> str | None:
+        return self._exhaustion_reason
+
+    def _mark_finalizing(self, reason: str) -> None:
+        if self._phase == "active":
+            self._phase = "finalizing"
+        self._exhaustion_reason = reason
+
+    def _log_block(self, reason: str, *, signature: str | None = None, budget: int | None = None) -> None:
+        logger.warning(
+            "Orchestrator loop guard blocked research batch | request=%s tier=%s phase=%s reason=%s "
+            "batches=%d queries=%d turns=%d limit=%s signature=%s",
+            self._request_tag,
+            self._declared_tier,
+            self._phase,
+            reason,
+            self._batch_call_count,
+            self._total_query_count,
+            self._model_turn_count,
+            budget if budget is not None else "-",
+            signature[:12] if signature else "-",
+        )
+
+    @staticmethod
+    def _blocked_result(tool_call: dict, message: str) -> ToolMessage:
+        return ToolMessage(
+            content=message,
+            tool_call_id=tool_call.get("id", "orchestrator-loop-guard"),
+            name=tool_call.get("name", _RUN_RESEARCH_BATCH_TOOL),
+            status="error",
+        )
+
+    @staticmethod
+    def _extract_queries(tool_call: dict) -> list[object]:
+        args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", None)
+        if isinstance(args, dict):
+            queries = args.get("queries")
+            if isinstance(queries, list):
+                return queries
+        return []
+
+    def _filter_tools(self, tools: list[object]) -> list[object]:
+        """Withdraw research and think tools once the request is finalizing."""
+        if not self._config.enabled or self._phase == "active":
+            return tools
+        hidden = {_RUN_RESEARCH_BATCH_TOOL, _THINK_TOOL}
+        return [tool for tool in tools if _request_tool_name(tool) not in hidden]
+
+    def _maybe_force_finalize_on_turns(self) -> None:
+        budgets = self._config.budgets_for_tier(self._declared_tier)
+        if budgets is None:
+            return
+        if self._model_turn_count > budgets.max_orchestrator_turns and self._phase == "active":
+            self._mark_finalizing("orchestrator turn budget")
+            self._log_block("orchestrator_turn_budget", budget=budgets.max_orchestrator_turns)
+
+    def wrap_model_call(self, request, handler):
+        """Count the turn, force finalize on turn overflow, and withdraw tools when finalizing."""
+        if not self._config.enabled:
+            return handler(request)
+        self._model_turn_count += 1
+        self._maybe_force_finalize_on_turns()
+        return handler(request.override(tools=self._filter_tools(request.tools)))
+
+    async def awrap_model_call(self, request, handler):
+        """Async counterpart of ``wrap_model_call``."""
+        if not self._config.enabled:
+            return await handler(request)
+        self._model_turn_count += 1
+        self._maybe_force_finalize_on_turns()
+        return await handler(request.override(tools=self._filter_tools(request.tools)))
+
+    async def awrap_tool_call(self, request, handler):
+        """Capture the tier and enforce request-wide batch/query/duplicate budgets."""
+        tool_call = getattr(request, "tool_call", None)
+        if not self._config.enabled or not isinstance(tool_call, dict):
+            return await handler(request)
+
+        name = tool_call.get("name")
+        if name == _DECLARE_EFFORT_TIER_TOOL:
+            args = tool_call.get("args")
+            if isinstance(args, dict) and args.get("tier"):
+                self._declared_tier = args["tier"]
+                logger.debug(
+                    "OrchestratorLoopGuardMiddleware: request=%s declared tier=%s",
+                    self._request_tag,
+                    self._declared_tier,
+                )
+            return await handler(request)
+
+        if name != _RUN_RESEARCH_BATCH_TOOL:
+            return await handler(request)
+
+        budgets = self._config.budgets_for_tier(self._declared_tier)
+        if budgets is None:
+            # single_shot / direct / meta / pre-declaration: this guard does not bound them.
+            return await handler(request)
+
+        # If we are already finalizing, no further research may be requested.
+        if self._phase != "active":
+            self._log_block("already_finalizing")
+            return self._blocked_result(
+                tool_call,
+                "Source research is closed: the request has reached its research budget and is finalizing. "
+                "Do not call run_research_batch again. Use get_verified_sources and submit_final_report "
+                "to write your final answer from the notes already gathered; represent any missing "
+                "components as explicit gaps.",
+            )
+
+        queries = self._extract_queries(tool_call)
+        incoming = len(queries)
+
+        # --- Count and check BEFORE awaiting the handler so concurrent batch calls in one turn
+        # share one hard ceiling (no await between the checks and the increments). ---
+        if self._batch_call_count + 1 > budgets.max_batch_calls:
+            self._mark_finalizing("research batch-call budget")
+            self._log_block("batch_call_budget", budget=budgets.max_batch_calls)
+            return self._blocked_result(
+                tool_call,
+                f"Research batch budget reached ({self._batch_call_count}/{budgets.max_batch_calls} calls). "
+                "No further research batches will run. Call get_verified_sources and submit_final_report to "
+                "finalize from the evidence already gathered; record unsupported requirements as gaps.",
+            )
+
+        if incoming and self._total_query_count + incoming > budgets.max_total_research_queries:
+            self._mark_finalizing("total delegated-query budget")
+            self._log_block("total_query_budget", budget=budgets.max_total_research_queries)
+            remaining = budgets.max_total_research_queries - self._total_query_count
+            return self._blocked_result(
+                tool_call,
+                f"Delegated-query budget reached: this batch of {incoming} would exceed the remaining "
+                f"{max(remaining, 0)} of {budgets.max_total_research_queries} queries for this request. The "
+                "batch was not run. Call get_verified_sources and submit_final_report to finalize from the "
+                "evidence already gathered; record unsupported requirements as gaps.",
+            )
+
+        signatures = [_canonical_research_query_signature(q) for q in queries]
+        for signature in signatures:
+            if self._query_signature_counts.get(signature, 0) >= self._config.max_identical_research_queries:
+                self._mark_finalizing("repeated delegated-query signature")
+                self._log_block("duplicate_query", signature=signature)
+                return self._blocked_result(
+                    tool_call,
+                    "Duplicate research query blocked: this request has already researched an identical query. "
+                    "Retrying the same query will not surface new evidence. Call get_verified_sources and "
+                    "submit_final_report to finalize; if a required period or component is unavailable in the "
+                    "configured sources, state it as an explicit evidence gap instead of searching again.",
+                )
+
+        # Reserve the budget atomically (still before the first await).
+        self._batch_call_count += 1
+        self._total_query_count += incoming
+        for signature in signatures:
+            self._query_signature_counts[signature] = self._query_signature_counts.get(signature, 0) + 1
+        logger.info(
+            "Orchestrator loop guard: request=%s tier=%s batch=%d/%d queries=%d/%d turns=%d",
+            self._request_tag,
+            self._declared_tier,
+            self._batch_call_count,
+            budgets.max_batch_calls,
+            self._total_query_count,
+            budgets.max_total_research_queries,
+            self._model_turn_count,
+        )
+        return await handler(request)

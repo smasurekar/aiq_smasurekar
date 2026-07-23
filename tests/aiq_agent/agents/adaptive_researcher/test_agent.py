@@ -15,6 +15,7 @@
 
 """Tests for AdaptiveResearcherAgent report extraction and the no-research safeguard."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -25,9 +26,11 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
+from langgraph.errors import GraphRecursionError
 
 from aiq_agent.agents.adaptive_researcher.agent import _WRITER_COMPLETION_MARKER
 from aiq_agent.agents.adaptive_researcher.agent import AdaptiveResearcherAgent
+from aiq_agent.agents.adaptive_researcher.models import AdaptiveRequestTerminationConfig
 from aiq_agent.agents.adaptive_researcher.models import AdaptiveResearchAgentState
 from aiq_agent.agents.adaptive_researcher.tools.finalize import FINAL_REPORT_META_PATH
 from aiq_agent.common import LLMProvider
@@ -219,3 +222,145 @@ class TestNoResearchSafeguard:
             out = await agent.run(state)
         assert out is not None
         assert "AI-Q research assistant" in out.messages[-1].content
+
+
+def _raising_graph(exc: BaseException):
+    """A mock graph whose ainvoke raises the given exception."""
+    graph = MagicMock()
+    graph.with_config = MagicMock(return_value=graph)
+    graph.ainvoke = AsyncMock(side_effect=exc)
+    return graph
+
+
+def research_note_file(path: str, summary: str, gap_descriptions: list[str]) -> dict:
+    gaps = [{"description": d, "impact": "matters", "suggested_follow_up_queries": []} for d in gap_descriptions]
+    payload = {"summary": summary, "gaps": gaps}
+    return {path: {"content": json.dumps(payload), "encoding": "utf-8"}}
+
+
+class TestPersistedNotesAndGaps:
+    def test_parses_summaries_and_gaps(self):
+        files = {
+            **research_note_file(
+                "/shared/research_note_01_apple_ab12cd34.json", "Apple 2022/2023 covered", ["FY2024 10-K missing"]
+            ),
+            "/shared/plan.json": {"content": "{}", "encoding": "utf-8"},
+        }
+        summaries, gaps = AdaptiveResearcherAgent._persisted_notes_and_gaps(files)
+        assert summaries == ["Apple 2022/2023 covered"]
+        assert gaps == ["FY2024 10-K missing"]
+
+    def test_ignores_non_note_files_and_bad_json(self):
+        files = {
+            "/shared/research_note_02_x.json": {"content": "not-json", "encoding": "utf-8"},
+            "/shared/output.md": {"content": "# hi", "encoding": "utf-8"},
+        }
+        assert AdaptiveResearcherAgent._persisted_notes_and_gaps(files) == ([], [])
+
+    def test_empty_or_non_dict(self):
+        assert AdaptiveResearcherAgent._persisted_notes_and_gaps({}) == ([], [])
+        assert AdaptiveResearcherAgent._persisted_notes_and_gaps(None) == ([], [])
+
+
+class TestDeterministicPartial:
+    def test_bounded_failure_when_no_evidence(self, agent):
+        state = AdaptiveResearchAgentState(messages=[HumanMessage(content="q")])
+        md = agent._render_deterministic_partial(state, "the time limit was reached")
+        assert "could not be completed" in md.lower()
+        assert "the time limit was reached" in md
+
+    def test_partial_lists_gaps_and_sources(self, agent):
+        agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.com", title="Apple 10-Q 2023"))
+        files = research_note_file(
+            "/shared/research_note_01_x.json", "Found 2023 data", ["FY2024 unavailable", "FY2025 unavailable"]
+        )
+        state = AdaptiveResearchAgentState(messages=[HumanMessage(content="q")], files=files)
+        md = agent._render_deterministic_partial(state, "the research budget was reached")
+        assert "# Partial research result" in md
+        assert "Found 2023 data" in md
+        assert "## Evidence gaps" in md
+        assert "FY2024 unavailable" in md
+        assert "FY2025 unavailable" in md
+        assert "## Sources" in md
+        assert "Apple 10-Q 2023" in md
+
+
+class TestForcedTerminationPaths:
+    @pytest.mark.asyncio
+    async def test_timeout_returns_bounded_failure_when_no_evidence(self, agent):
+        with patch(
+            "aiq_agent.agents.adaptive_researcher.factory.create_deep_agent",
+            return_value=_raising_graph(TimeoutError()),
+        ):
+            state = AdaptiveResearchAgentState(messages=[HumanMessage(content="apple fy2024 inventory")])
+            out = await agent.run(state)
+        assert out is not None
+        assert "could not be completed" in out.messages[-1].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_partial_with_gathered_sources(self, agent):
+        agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.com", title="Apple 2023 10-K"))
+        with patch(
+            "aiq_agent.agents.adaptive_researcher.factory.create_deep_agent",
+            return_value=_raising_graph(TimeoutError()),
+        ):
+            state = AdaptiveResearchAgentState(messages=[HumanMessage(content="apple fy2024 inventory")])
+            out = await agent.run(state)
+        content = out.messages[-1].content
+        assert "Partial research result" in content
+        assert "Apple 2023 10-K" in content
+
+    @pytest.mark.asyncio
+    async def test_recursion_limit_routes_to_partial(self, agent):
+        with patch(
+            "aiq_agent.agents.adaptive_researcher.factory.create_deep_agent",
+            return_value=_raising_graph(GraphRecursionError("recursion limit reached")),
+        ):
+            state = AdaptiveResearchAgentState(messages=[HumanMessage(content="q")])
+            out = await agent.run(state)
+        assert out is not None
+        assert out.messages[-1].content  # a terminal answer, not a raised error
+
+    @pytest.mark.asyncio
+    async def test_reuses_completed_output_on_termination(self, agent):
+        agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.com", title="Example"))
+        completed = "# Answer\n\nComplete body [1].\n\n## Sources\n[1] Example: https://example.com"
+        with patch(
+            "aiq_agent.agents.adaptive_researcher.factory.create_deep_agent",
+            return_value=_raising_graph(TimeoutError()),
+        ):
+            state = AdaptiveResearchAgentState(
+                messages=[HumanMessage(content="q")],
+                files=output_markdown_file(completed),
+            )
+            out = await agent.run(state)
+        # The already-completed report is reused rather than a partial being synthesized.
+        assert "Complete body [1]" in out.messages[-1].content
+        assert "Partial research result" not in out.messages[-1].content
+
+    @pytest.mark.asyncio
+    async def test_real_deadline_cancels_hung_graph(self, mock_llm_provider):
+        """asyncio.timeout actually fires on a graph whose ainvoke never returns."""
+        agent = AdaptiveResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[web_search_tool],
+            request_termination=AdaptiveRequestTerminationConfig(
+                workflow_timeout_seconds=2,
+                fallback_finalizer_timeout_seconds=1,
+            ),
+        )
+
+        async def _never_returns(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        graph = MagicMock()
+        graph.with_config = MagicMock(return_value=graph)
+        graph.ainvoke = _never_returns
+        with patch(
+            "aiq_agent.agents.adaptive_researcher.factory.create_deep_agent",
+            return_value=graph,
+        ):
+            state = AdaptiveResearchAgentState(messages=[HumanMessage(content="q")])
+            out = await asyncio.wait_for(agent.run(state), timeout=10)
+        assert out is not None
+        assert "could not be completed" in out.messages[-1].content.lower()
