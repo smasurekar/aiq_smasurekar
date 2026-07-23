@@ -39,8 +39,10 @@ earlier in the chain may transform or omit prior AIMessages by the time this mid
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import SystemMessage
 
 # Reuse the tool-name reader from deep_researcher so tool shapes are handled identically.
 from aiq_agent.agents.deep_researcher.custom_middleware import _request_tool_name
@@ -107,6 +109,14 @@ class ComplexityRouterMiddleware(AgentMiddleware):
     time this middleware's ``awrap_model_call`` runs. Each middleware instance is created per
     request (in ``build_adaptive_research_graph`` called from ``AdaptiveResearcherAgent.run``),
     so caching the tier on ``self`` is safe with concurrent requests.
+
+    When a ``prompt_renderer`` is supplied (``dynamic_orchestrator_sections=True``), the
+    middleware also performs a dynamic *prompt* swap: the graph is built with a minimal "router"
+    system prompt, and once a tier is declared this middleware replaces the system message on
+    every subsequent model call with ``prompt_renderer(tier)`` — the prompt trimmed to just that
+    tier's sections. Renders are memoized per tier so the swapped prompt is byte-stable across a
+    run's model calls (KV-cache friendly) and each tier renders at most once. Re-declaring a
+    higher tier (escalation) simply renders and caches that tier's larger prompt.
     """
 
     def __init__(
@@ -116,6 +126,7 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         allow_delegation: bool = False,
         direct_source_tools: list[object] | None = None,
         single_loop_single_shot: bool = False,
+        prompt_renderer: Callable[[str], str] | None = None,
     ) -> None:
         """Compute hidden tools, preserving the citation-safe delta writer path when needed."""
         self._hidden_tool_names = hidden_tools_for_ceiling(
@@ -128,6 +139,10 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         self._single_loop_single_shot = single_loop_single_shot
         # Populated by awrap_tool_call the moment declare_effort_tier executes.
         self._declared_tier: str | None = None
+        # Per-tier prompt swap (opt-in). None -> tools-only behavior, no system-prompt swap.
+        self._prompt_renderer = prompt_renderer
+        # Memoize rendered prompts per tier: byte-stable across turns, and render each tier once.
+        self._rendered_prompt_cache: dict[str, str] = {}
 
     async def awrap_tool_call(self, request, handler):
         """Intercept ``declare_effort_tier`` to cache the declared tier for tool-swap logic."""
@@ -157,13 +172,30 @@ class ComplexityRouterMiddleware(AgentMiddleware):
             return tools
         return [tool for tool in tools if _request_tool_name(tool) not in self._hidden_tool_names]
 
+    def _model_overrides(self, request) -> dict[str, object]:
+        """Build the ``request.override(...)`` kwargs applied before each model call.
+
+        Always filters tools (ceiling hiding + single-shot swap). Additionally, when a prompt
+        renderer is configured and a tier has been declared, swaps the system message to that
+        tier's trimmed prompt — mirroring ``TodoSuppressionMiddleware._clean_request`` in
+        deep_researcher (one overrides dict, a freshly built ``SystemMessage``). Before a tier is
+        declared (turn 1) ``_declared_tier`` is None, so the baked-in router prompt is left intact.
+        """
+        overrides: dict[str, object] = {"tools": self._filter_tools(request.tools)}
+        if self._prompt_renderer is not None and self._declared_tier is not None:
+            tier = self._declared_tier
+            if tier not in self._rendered_prompt_cache:
+                self._rendered_prompt_cache[tier] = self._prompt_renderer(tier)
+            overrides["system_message"] = SystemMessage(content=self._rendered_prompt_cache[tier])
+        return overrides
+
     def wrap_model_call(self, request, handler):
-        """Hide or swap tools before a synchronous model call."""
-        return handler(request.override(tools=self._filter_tools(request.tools)))
+        """Hide/swap tools and (when active) swap the system prompt before a sync model call."""
+        return handler(request.override(**self._model_overrides(request)))
 
     async def awrap_model_call(self, request, handler):
-        """Hide or swap tools before an asynchronous model call."""
-        return await handler(request.override(tools=self._filter_tools(request.tools)))
+        """Hide/swap tools and (when active) swap the system prompt before an async model call."""
+        return await handler(request.override(**self._model_overrides(request)))
 
 
 class ConsecutiveThinkGuardMiddleware(AgentMiddleware):

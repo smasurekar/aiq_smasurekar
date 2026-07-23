@@ -64,7 +64,9 @@ from .custom_middleware import ComplexityRouterMiddleware
 from .custom_middleware import ConsecutiveThinkGuardMiddleware
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
+from .tiers import SECTION_PRESETS
 from .tiers import enabled_tier_profiles
+from .tiers import sections_for_tier
 from .tools.finalize import build_declare_effort_tier_tool
 from .tools.finalize import build_submit_final_report_tool
 from .tools.research import build_adaptive_research_batch_tool
@@ -165,6 +167,7 @@ def build_adaptive_research_graph(
     enforce_tier_tools: bool = False,
     enable_source_router: bool = False,
     single_loop_single_shot: bool = False,
+    dynamic_orchestrator_sections: bool = False,
 ) -> Any:
     """Build the full DeepAgents graph for one adaptive research run.
 
@@ -178,6 +181,12 @@ def build_adaptive_research_graph(
     researcher subagent) when the declared effort tier is ``single_shot``.  The
     ``ComplexityRouterMiddleware`` hides them for all other tiers so the orchestrator cannot
     call them accidentally on ``standard`` or ``deep`` paths.
+
+    When ``dynamic_orchestrator_sections=True`` (and the run is not a parent-report delta), the
+    build-time prompt is a minimal "router" prompt and ``ComplexityRouterMiddleware`` is attached
+    with a per-tier renderer: after ``declare_effort_tier`` fires it swaps in the trimmed prompt
+    for the declared tier, so cheap tiers stop paying for the deep/writer/delta machinery. With
+    the flag off, the full prompt is rendered once exactly as before.
     """
     from aiq_agent.agents.deep_researcher.custom_middleware import ExecuteTimeoutClampMiddleware
     from aiq_agent.agents.deep_researcher.custom_middleware import FilesystemToolCallGuardMiddleware
@@ -247,6 +256,79 @@ def build_adaptive_research_graph(
         *direct_source_tools,
     ]
 
+    # Build the callable-tools list for the prompt. Source tools are NOT listed here — they
+    # appear in "Retrieval Tools" and the single_shot section describes calling them directly.
+    # Listing them in "Your Tools" for non-single_shot tiers would invite accidental direct calls.
+    # (Computed before the middleware block so the per-tier prompt renderer below can capture it.)
+    orchestrator_prompt_tools = [
+        {"name": t.name, "description": t.description}
+        for t in orchestrator_tools
+        if t.name not in direct_source_tool_names
+    ]
+
+    # --- Dynamic per-tier prompt sections (opt-in) -------------------------------------------
+    # Parent-report delta rewrites are never routed: they always get the full delta prompt and
+    # no mid-run swap, because the citation-safe planned-writer path must never be trimmed away.
+    is_delta = context.parent_report_context_available
+    dynamic_sections_active = dynamic_orchestrator_sections and not is_delta
+
+    def _orchestrator_render_kwargs(tiers_for_mode: list[str]) -> dict[str, Any]:
+        """The render kwargs shared by every orchestrator render (build-time and per-tier swap).
+
+        ``tiers_for_mode`` controls which ``### <tier>`` procedure blocks the ## Workflow section
+        renders — collapsed to a single tier for the swapped-in prompt, or the full enabled set
+        for the router / delta / flag-off renders.
+        """
+        return {
+            "clarifier_result": context.state.clarifier_result,
+            # Advertise only the non-source tools as callable. Source tools appear in
+            # "Retrieval Tools"; the single_shot section instructs calling them directly when
+            # single_loop_single_shot is active.
+            "tools": orchestrator_prompt_tools,
+            # Retrieval tools are callable on the single_shot inline path when
+            # single_loop_single_shot=True; they remain reference-only on other tiers.
+            "retrieval_tools": context.tool_set.tools_info,
+            "enable_source_router": context.enable_source_router,
+            "max_research_concurrency": context.max_research_concurrency,
+            "execution_enabled": context.runtime.execution_enabled,
+            "parent_report_context_available": context.parent_report_context_available,
+            "enabled_tiers": tiers_for_mode,
+            "tier_profiles": enabled_tier_profiles(tiers_for_mode),
+            "triage_hint": "",
+            "single_loop_single_shot": single_loop_single_shot,
+        }
+
+    def _render_orchestrator(mode: str) -> str:
+        """Render the orchestrator prompt for one mode: "router", a tier name, or "delta".
+
+        Reuses ``context.render_prompt`` so the shared context (datetime, sandbox dirs, user_info,
+        ...) is injected identically to the build-time render. ``sections_for_tier`` trims the
+        template to just the blocks that mode needs; ``enabled_tiers`` is collapsed to the mode so
+        ## Workflow shows only that tier's procedure. An unrecognized declared tier (e.g. the meta
+        path's "meta") falls back to the full, untrimmed prompt so no guidance is ever missing.
+        """
+        if mode not in SECTION_PRESETS:
+            return context.render_prompt("orchestrator", **_orchestrator_render_kwargs(enabled_tiers))
+        tiers_for_mode = enabled_tiers if mode in ("router", "delta") else [mode]
+        return context.render_prompt(
+            "orchestrator",
+            **_orchestrator_render_kwargs(tiers_for_mode),
+            sections=sections_for_tier(mode, enabled=enabled_tiers),
+        )
+
+    # Choose the prompt baked in at build time:
+    #   * flag off        -> full untrimmed prompt (byte-identical to the pre-change behavior);
+    #   * flag on + delta  -> the full delta prompt (no swapping this run);
+    #   * flag on + normal -> a minimal "router" prompt; the middleware swaps in the per-tier
+    #                         prompt once declare_effort_tier fires.
+    if not dynamic_orchestrator_sections:
+        orchestrator_system_prompt = context.render_prompt("orchestrator", **_orchestrator_render_kwargs(enabled_tiers))
+    elif is_delta:
+        orchestrator_system_prompt = _render_orchestrator("delta")
+    else:
+        orchestrator_system_prompt = _render_orchestrator("router")
+    # -----------------------------------------------------------------------------------------
+
     # Reuse the deep researcher's subagent specs, but retype the planner's structured output to
     # AdaptiveResearchPlan so planner-authored queries carry the per-query `depth` hint into
     # /shared/plan.json (the deep/standard-writer path).
@@ -255,8 +337,11 @@ def build_adaptive_research_graph(
         if spec["name"] == PLANNER_AGENT:
             spec["response_format"] = AdaptiveResearchPlan
 
+    # ComplexityRouterMiddleware is attached for Layer-B tool hiding, the single-shot tool swap,
+    # and/or the dynamic prompt swap. When dynamic sections are active it also carries the
+    # per-tier renderer so it can replace the router prompt with the declared tier's prompt.
     orchestrator_middleware = context.middleware(context.middleware_set.orchestrator)
-    if enforce_tier_tools or single_loop_single_shot:
+    if enforce_tier_tools or single_loop_single_shot or dynamic_sections_active:
         orchestrator_middleware = [
             *orchestrator_middleware,
             ComplexityRouterMiddleware(
@@ -266,40 +351,16 @@ def build_adaptive_research_graph(
                 allow_delegation=context.parent_report_context_available,
                 direct_source_tools=direct_source_tools if single_loop_single_shot else None,
                 single_loop_single_shot=single_loop_single_shot,
+                # Only pass the renderer when dynamic sections are active; None preserves the
+                # tools-only behavior (no prompt swap) for the other wiring reasons.
+                prompt_renderer=_render_orchestrator if dynamic_sections_active else None,
             ),
         ]
-
-    # Build the callable-tools list for the prompt. Source tools are NOT listed here — they
-    # appear in "Retrieval Tools" and the single_shot section describes calling them directly.
-    # Listing them in "Your Tools" for non-single_shot tiers would invite accidental direct calls.
-    orchestrator_prompt_tools = [
-        {"name": t.name, "description": t.description}
-        for t in orchestrator_tools
-        if t.name not in direct_source_tool_names
-    ]
 
     agent = create_deep_agent(
         model=context.llm_provider.get(LLMRole.ORCHESTRATOR),
         tools=orchestrator_tools,
-        system_prompt=context.render_prompt(
-            "orchestrator",
-            clarifier_result=context.state.clarifier_result,
-            # Advertise only the non-source tools as callable. Source tools appear in
-            # "Retrieval Tools"; the single_shot section instructs calling them directly when
-            # single_loop_single_shot is active.
-            tools=orchestrator_prompt_tools,
-            # Retrieval tools are callable on the single_shot inline path when
-            # single_loop_single_shot=True; they remain reference-only on other tiers.
-            retrieval_tools=context.tool_set.tools_info,
-            enable_source_router=context.enable_source_router,
-            max_research_concurrency=context.max_research_concurrency,
-            execution_enabled=context.runtime.execution_enabled,
-            parent_report_context_available=context.parent_report_context_available,
-            enabled_tiers=enabled_tiers,
-            tier_profiles=enabled_tier_profiles(enabled_tiers),
-            triage_hint="",
-            single_loop_single_shot=single_loop_single_shot,
-        ),
+        system_prompt=orchestrator_system_prompt,
         subagents=subagents,
         store=InMemoryStore(),
         middleware=orchestrator_middleware,

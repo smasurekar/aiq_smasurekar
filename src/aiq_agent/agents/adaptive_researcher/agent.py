@@ -91,6 +91,7 @@ class AdaptiveResearcherAgent:
         enabled_tiers: list[str] | None = None,
         enforce_tier_tools: bool = False,
         single_loop_single_shot: bool = False,
+        dynamic_orchestrator_sections: bool = False,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
         job_id: str | None = None,
@@ -114,6 +115,9 @@ class AdaptiveResearcherAgent:
             enforce_tier_tools: Enable Layer-B ceiling-based tool hiding via ComplexityRouterMiddleware.
             single_loop_single_shot: Collapse single_shot to a direct-tool single loop, bypassing
                 the researcher subagent. Requires enforce_tier_tools or auto-enables the middleware.
+            dynamic_orchestrator_sections: Render the orchestrator prompt trimmed per declared tier
+                (minimal router prompt on turn 1, per-tier prompt swapped in after declare_effort_tier).
+                Off by default renders the full prompt once at build time, exactly as before.
             skills: Optional DeepAgents skills config.
             sandbox: Optional DeepAgents sandbox config.
             job_id: Optional async job identifier used to scope sandbox backends.
@@ -135,6 +139,7 @@ class AdaptiveResearcherAgent:
         self.enabled_tiers = list(enabled_tiers) if enabled_tiers else ["direct", "single_shot", "standard", "deep"]
         self.enforce_tier_tools = enforce_tier_tools
         self.single_loop_single_shot = single_loop_single_shot
+        self.dynamic_orchestrator_sections = dynamic_orchestrator_sections
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -224,6 +229,7 @@ class AdaptiveResearcherAgent:
             enabled_tiers=self.enabled_tiers,
             enforce_tier_tools=self.enforce_tier_tools,
             single_loop_single_shot=self.single_loop_single_shot,
+            dynamic_orchestrator_sections=self.dynamic_orchestrator_sections,
         )
 
     @staticmethod
