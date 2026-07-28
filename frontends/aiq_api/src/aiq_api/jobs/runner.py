@@ -67,6 +67,10 @@ _ADAPTIVE_RESEARCH_AGENT_KWARGS = _DEEP_RESEARCH_AGENT_KWARGS | {
     "enabled_tiers",
     "enforce_tier_tools",
     "single_loop_single_shot",
+    "researcher_loop_guard",
+    "request_termination",
+    "dynamic_orchestrator_sections",
+    "single_shot_search_budget",
 }
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
 _JOB_SCOPED_AGENT_KWARGS = frozenset({"job_id"})
@@ -1269,6 +1273,10 @@ def _create_agent_instance(
             enabled_tiers=fn_config.enabled_tiers,
             enforce_tier_tools=fn_config.enforce_tier_tools,
             single_loop_single_shot=fn_config.single_loop_single_shot,
+            single_shot_search_budget=fn_config.single_shot_search_budget,
+            dynamic_orchestrator_sections=fn_config.dynamic_orchestrator_sections,
+            researcher_loop_guard=fn_config.researcher_loop_guard,
+            request_termination=fn_config.request_termination,
             skills=fn_config.skills,
             sandbox=fn_config.sandbox,
             job_id=job_id,
