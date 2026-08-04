@@ -364,3 +364,131 @@ class TestForcedTerminationPaths:
             out = await asyncio.wait_for(agent.run(state), timeout=10)
         assert out is not None
         assert "could not be completed" in out.messages[-1].content.lower()
+
+
+# ---------------------------------------------------------------------------
+# single_shot shallow sub-agent: capture recovery and cancellation ownership
+# ---------------------------------------------------------------------------
+
+SHALLOW_RECOVERED_REPORT = "# Shallow answer\n\nThe shallow researcher finished before the deadline."
+
+
+def _capture(status="completed", *, tier="single_shot", markdown=SHALLOW_RECOVERED_REPORT):
+    from aiq_agent.agents.adaptive_researcher.subagents import ShallowSubagentCapture
+
+    capture = ShallowSubagentCapture()
+    capture.status = status
+    capture.declared_tier = tier
+    capture.markdown = markdown if status == "completed" else None
+    capture.attempts = 1
+    return capture
+
+
+def _bundle(capture, *, raises=None, result=None):
+    """An AdaptiveResearchGraphRun whose runnable raises (or returns) on ainvoke."""
+    from aiq_agent.agents.adaptive_researcher.factory import AdaptiveResearchGraphRun
+
+    runnable = MagicMock()
+    if raises is not None:
+        runnable.ainvoke = AsyncMock(side_effect=raises)
+    else:
+        runnable.ainvoke = AsyncMock(return_value=result)
+    return AdaptiveResearchGraphRun(runnable=runnable, shallow_capture=capture)
+
+
+class TestShallowCaptureRecovery:
+    """After a forced exit the graph returns no state, so the run-scoped capture is the only seam."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [TimeoutError(), GraphRecursionError("recursion limit reached")])
+    async def test_completed_single_shot_capture_is_recovered(self, agent, error):
+        capture = _capture()
+        with patch.object(agent, "_build_orchestrator_agent", return_value=_bundle(capture, raises=error)):
+            out = await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        assert "The shallow researcher finished before the deadline." in out.messages[-1].content
+        assert "Partial research result" not in out.messages[-1].content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "capture",
+        [
+            _capture(status="running"),
+            _capture(status="failed"),
+            _capture(status="completed", markdown=""),
+            _capture(status="completed", tier="deep"),
+        ],
+        ids=["running", "failed", "empty", "escalated"],
+    )
+    async def test_unusable_captures_fall_back_to_the_deterministic_partial(self, agent, capture):
+        with patch.object(agent, "_build_orchestrator_agent", return_value=_bundle(capture, raises=TimeoutError())):
+            out = await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        content = out.messages[-1].content
+        assert "The shallow researcher finished before the deadline." not in content
+        assert "could not be completed" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_recovery_is_inert_when_the_subagent_is_disabled(self, agent):
+        with patch.object(agent, "_build_orchestrator_agent", return_value=_bundle(None, raises=TimeoutError())):
+            out = await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        assert "could not be completed" in out.messages[-1].content.lower()
+
+
+class TestShallowCaptureCancellation:
+    """`asyncio.create_task` detaches the shallow run, so `run()` must always cancel it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [TimeoutError(), GraphRecursionError("recursion limit reached")],
+        ids=["timeout", "recursion"],
+    )
+    async def test_cancelled_on_forced_exit_paths(self, agent, error):
+        capture = _capture(status="running")
+        with (
+            patch.object(agent, "_build_orchestrator_agent", return_value=_bundle(capture, raises=error)),
+            patch.object(capture, "cancel") as cancel,
+        ):
+            await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_on_normal_completion(self, agent):
+        capture = _capture()
+        agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.com", title="Example"))
+        result = {
+            "messages": [AIMessage(content="done")],
+            "files": {"/shared/final_report.md": {"content": "# Answer\n\nBody [1].", "encoding": "utf-8"}},
+        }
+        with (
+            patch.object(agent, "_build_orchestrator_agent", return_value=_bundle(capture, result=result)),
+            patch.object(capture, "cancel") as cancel,
+        ):
+            await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_when_the_graph_raises_an_unexpected_error(self, agent):
+        capture = _capture(status="running")
+        with (
+            patch.object(
+                agent, "_build_orchestrator_agent", return_value=_bundle(capture, raises=RuntimeError("boom"))
+            ),
+            patch.object(capture, "cancel") as cancel,
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_when_the_request_is_cancelled(self, agent):
+        """A client disconnect raises CancelledError, which run() deliberately does not catch."""
+        capture = _capture(status="running")
+        with (
+            patch.object(
+                agent, "_build_orchestrator_agent", return_value=_bundle(capture, raises=asyncio.CancelledError())
+            ),
+            patch.object(capture, "cancel") as cancel,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await agent.run(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        cancel.assert_called_once()

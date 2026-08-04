@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -65,10 +66,14 @@ from .custom_middleware import ComplexityRouterMiddleware
 from .custom_middleware import ConsecutiveThinkGuardMiddleware
 from .custom_middleware import OrchestratorLoopGuardMiddleware
 from .custom_middleware import ResearcherLoopGuardMiddleware
+from .custom_middleware import SingleShotShallowDelegationMiddleware
 from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
 from .models import ResearcherLoopGuardConfig
+from .subagents import ShallowSubagentCapture
+from .subagents import build_shallow_researcher_subagent
+from .subagents import last_human_text
 from .tiers import SECTION_PRESETS
 from .tiers import enabled_tier_profiles
 from .tiers import sections_for_tier
@@ -80,6 +85,11 @@ logger = logging.getLogger(__name__)
 
 FINALIZE_TOOL_NAME = "submit_final_report"
 DECLARE_TIER_TOOL_NAME = "declare_effort_tier"
+
+# Loop bounds handed to the ``single_shot`` shallow sub-agent. Same defaults the standalone
+# ``shallow_research_agent`` uses, so the delegated run behaves as it does on its own.
+DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS = 10
+DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS = 5
 
 # The adaptive tool set is identical to the deep researcher's; alias the builder so agent.py
 # reads clearly and future divergence has a single seam.
@@ -170,6 +180,20 @@ def build_adaptive_research_middleware_set(
     )
 
 
+@dataclass(frozen=True)
+class AdaptiveResearchGraphRun:
+    """One built adaptive graph plus the run-scoped state ``AdaptiveResearcherAgent.run`` needs.
+
+    ``shallow_capture`` is ``None`` unless the ``single_shot`` shallow sub-agent is wired in. The
+    agent uses it for two things a returned graph state cannot provide: cancelling an in-flight
+    shallow run during teardown, and recovering a completed shallow report after ``ainvoke``
+    raises (a timeout or recursion abort returns no state at all).
+    """
+
+    runnable: Any
+    shallow_capture: ShallowSubagentCapture | None = None
+
+
 def build_adaptive_research_graph(
     *,
     llm_provider: LLMProvider,
@@ -191,7 +215,10 @@ def build_adaptive_research_graph(
     single_loop_single_shot: bool = False,
     single_shot_search_budget: int = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
     dynamic_orchestrator_sections: bool = False,
-) -> Any:
+    single_shot_shallow_subagent: bool = False,
+    shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
+    shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+) -> AdaptiveResearchGraphRun:
     """Build the full DeepAgents graph for one adaptive research run.
 
     Mirrors ``deep_researcher.build_deep_research_graph`` with the adaptive divergences: the
@@ -210,6 +237,17 @@ def build_adaptive_research_graph(
     with a per-tier renderer: after ``declare_effort_tier`` fires it swaps in the trimmed prompt
     for the declared tier, so cheap tiers stop paying for the deep/writer/delta machinery. With
     the flag off, the full prompt is rendered once exactly as before.
+
+    When ``single_shot_shallow_subagent=True`` (and ``single_shot`` is enabled, and the run is not
+    a parent-report delta), the shallow researcher is registered as a DeepAgents
+    ``CompiledSubAgent`` and ``SingleShotShallowDelegationMiddleware`` is attached. On that path
+    the orchestrator delegates the original user query to the shallow researcher and its report
+    becomes the run's authoritative answer. Takes precedence over ``single_loop_single_shot``.
+
+    Returns:
+        An ``AdaptiveResearchGraphRun`` carrying the configured runnable and, when the shallow
+        sub-agent is active, the run-scoped capture the agent needs for cancellation and for
+        report recovery after a timeout or recursion abort.
     """
     from aiq_agent.agents.deep_researcher.custom_middleware import ExecuteTimeoutClampMiddleware
     from aiq_agent.agents.deep_researcher.custom_middleware import FilesystemToolCallGuardMiddleware
@@ -268,10 +306,26 @@ def build_adaptive_research_graph(
     declare_effort_tier_tool = build_declare_effort_tier_tool(backend=context.backend)
     submit_final_report_tool = build_submit_final_report_tool(backend=context.backend)
 
+    # --- Shallow-researcher sub-agent (opt-in, single_shot only) -----------------------------
+    # Parent-report deltas are excluded here, at the canonical mode definition, so every later
+    # prompt / tool / middleware branch inherits the safety decision: a delta rewrite must keep
+    # the citation-safe planned-writer pipeline and can never be answered by the shallow agent.
+    shallow_mode = (
+        single_shot_shallow_subagent and "single_shot" in enabled_tiers and not context.parent_report_context_available
+    )
+    shallow_capture = ShallowSubagentCapture() if shallow_mode else None
+    # Captured once, at build time, from the request's own messages: the sub-agent is always given
+    # the user's actual question rather than the orchestrator's paraphrase of it.
+    original_query = last_human_text(state) or ""
+
     # When single_loop_single_shot is enabled, wire source tools into the orchestrator's ToolNode
     # so they can be executed directly on the single_shot inline path. ComplexityRouterMiddleware
-    # hides them from the model for all other tiers (standard/deep/direct).
-    direct_source_tools = list(context.tool_set.research_source_tools) if single_loop_single_shot else []
+    # hides them from the model for all other tiers (standard/deep/direct). With the shallow
+    # sub-agent active the orchestrator must not hold source tools at all — retrieval belongs to
+    # the sub-agent — so the shallow mode wins when both flags are somehow set.
+    direct_source_tools = (
+        list(context.tool_set.research_source_tools) if (single_loop_single_shot and not shallow_mode) else []
+    )
     direct_source_tool_names: frozenset[str] = frozenset(t.name for t in direct_source_tools)
 
     orchestrator_tools = [
@@ -325,6 +379,9 @@ def build_adaptive_research_graph(
             # Surfaced in the single_shot workflow block so the Layer-A prompt states the same
             # hard cap that ComplexityRouterMiddleware enforces at the tool level (Layer-B).
             "single_shot_search_budget": single_shot_search_budget,
+            # Selects the delegated single_shot procedure block. Runtime enforcement lives in
+            # SingleShotShallowDelegationMiddleware; the prompt only optimizes model behavior.
+            "single_shot_shallow_subagent": shallow_mode,
         }
 
     def _render_orchestrator(mode: str) -> str:
@@ -365,6 +422,24 @@ def build_adaptive_research_graph(
     for spec in subagents:
         if spec["name"] == PLANNER_AGENT:
             spec["response_format"] = AdaptiveResearchPlan
+    if shallow_mode:
+        # A CompiledSubAgent spec: DeepAgents uses the runnable as provided and advertises the
+        # name/description inside the shared `task` tool.
+        subagents.append(
+            build_shallow_researcher_subagent(
+                llm_provider=llm_provider,
+                # The request's raw NAT tools (already filtered by data_sources upstream), NOT
+                # tool_set.researcher_tools: the shallow researcher must run exactly as it does
+                # standalone, where it receives the plain tool list.
+                tools=tools,
+                callbacks=callbacks,
+                capture=shallow_capture,
+                source_registry_middleware=source_registry_middleware,
+                original_query=original_query,
+                max_llm_turns=shallow_subagent_max_llm_turns,
+                max_tool_iterations=shallow_subagent_max_tool_iterations,
+            )
+        )
 
     # ComplexityRouterMiddleware is attached for Layer-B tool hiding, the single-shot tool swap,
     # and/or the dynamic prompt swap. When dynamic sections are active it also carries the
@@ -381,7 +456,7 @@ def build_adaptive_research_graph(
             *orchestrator_middleware,
             OrchestratorLoopGuardMiddleware(config=request_termination),
         ]
-    if enforce_tier_tools or single_loop_single_shot or dynamic_sections_active:
+    if enforce_tier_tools or single_loop_single_shot or dynamic_sections_active or shallow_mode:
         orchestrator_middleware = [
             *orchestrator_middleware,
             ComplexityRouterMiddleware(
@@ -396,7 +471,18 @@ def build_adaptive_research_graph(
                 # Only pass the renderer when dynamic sections are active; None preserves the
                 # tools-only behavior (no prompt swap) for the other wiring reasons.
                 prompt_renderer=_render_orchestrator if dynamic_sections_active else None,
+                # Keeps `task` reachable under a shallow-only ceiling and hides the research
+                # batch / source tools once single_shot is declared.
+                shallow_subagent_capture=shallow_capture,
             ),
+        ]
+    if shallow_mode:
+        # The correctness boundary for tier-aware routing: tool filtering cannot choose among the
+        # subagent names advertised inside the shared `task` tool, so this middleware forces the
+        # single_shot delegation and makes the captured report authoritative at finalize time.
+        orchestrator_middleware = [
+            *orchestrator_middleware,
+            SingleShotShallowDelegationMiddleware(capture=shallow_capture, original_query=original_query),
         ]
 
     agent = create_deep_agent(
@@ -409,4 +495,7 @@ def build_adaptive_research_graph(
         permissions=context.permissions(ORCHESTRATOR_AGENT),
         backend=context.backend,
     )
-    return agent.with_config({"recursion_limit": request_termination.recursion_limit})
+    return AdaptiveResearchGraphRun(
+        runnable=agent.with_config({"recursion_limit": request_termination.recursion_limit}),
+        shallow_capture=shallow_capture,
+    )

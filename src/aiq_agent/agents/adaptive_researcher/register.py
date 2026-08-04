@@ -30,6 +30,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepResearchSandboxConfig
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepResearchSkillsConfig
@@ -56,6 +57,8 @@ from .agent import DEFAULT_MAX_RESEARCH_CONCURRENCY
 from .agent import DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE
 from .agent import DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
 from .agent import AdaptiveResearcherAgent
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS
 from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import ResearcherLoopGuardConfig
@@ -155,6 +158,34 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
             "is on and the declared tier is single_shot; standard/deep are unaffected."
         ),
     )
+    single_shot_shallow_subagent: bool = Field(
+        default=False,
+        description=(
+            "Route the single_shot tier to the shallow researcher, wired into the adaptive graph "
+            "as a DeepAgents CompiledSubAgent. Tier selection is unchanged; when single_shot is "
+            "declared the orchestrator delegates the original user query to the shallow "
+            "researcher via `task`, and the runtime prevents the orchestrator from rewriting the "
+            "returned report. Mutually exclusive with single_loop_single_shot (both control the "
+            "single_shot execution path). Off by default for rollout safety."
+        ),
+    )
+    shallow_subagent_max_llm_turns: int = Field(
+        default=DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
+        ge=1,
+        description=(
+            "Maximum LLM turns inside the single_shot shallow subagent. Defaults to the standalone "
+            "shallow_research_agent value so the delegated run behaves as it does on its own."
+        ),
+    )
+    shallow_subagent_max_tool_iterations: int = Field(
+        default=DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+        ge=1,
+        description=(
+            "Maximum tool-calling iterations inside the single_shot shallow subagent before it is "
+            "forced to synthesize. This is the shallow path's own retrieval budget, the analogue "
+            "of single_shot_search_budget on the single_loop_single_shot path."
+        ),
+    )
     single_shot_researcher_llm: LLMRef | None = Field(
         default=None,
         description=(
@@ -204,6 +235,22 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
         ge=1,
         description="Maximum concrete inputs accepted by batch-capable source tool wrappers.",
     )
+
+    @model_validator(mode="after")
+    def _validate_single_shot_mode(self):
+        """Reject enabling two mutually exclusive single_shot execution paths at once.
+
+        ``single_loop_single_shot`` collapses single_shot to direct source-tool calls from the
+        orchestrator loop; ``single_shot_shallow_subagent`` delegates the whole tier to the
+        shallow researcher. Both cannot own the same tier, so this is a config error rather than
+        a silent precedence rule the operator has to know about.
+        """
+        if self.single_shot_shallow_subagent and self.single_loop_single_shot:
+            raise ValueError(
+                "single_shot_shallow_subagent and single_loop_single_shot both control the "
+                "single_shot execution path; enable at most one."
+            )
+        return self
 
     @field_validator("skills", mode="before")
     @classmethod
@@ -284,6 +331,9 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
         enforce_tier_tools=config.enforce_tier_tools,
         single_loop_single_shot=config.single_loop_single_shot,
         single_shot_search_budget=config.single_shot_search_budget,
+        single_shot_shallow_subagent=config.single_shot_shallow_subagent,
+        shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
+        shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,
         dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
         researcher_loop_guard=config.researcher_loop_guard,
         request_termination=config.request_termination,
@@ -324,6 +374,9 @@ async def adaptive_research_agent(config: AdaptiveResearchAgentConfig, builder: 
                     enforce_tier_tools=config.enforce_tier_tools,
                     single_loop_single_shot=config.single_loop_single_shot,
                     single_shot_search_budget=config.single_shot_search_budget,
+                    single_shot_shallow_subagent=config.single_shot_shallow_subagent,
+                    shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
+                    shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,
                     dynamic_orchestrator_sections=config.dynamic_orchestrator_sections,
                     researcher_loop_guard=config.researcher_loop_guard,
                     request_termination=config.request_termination,
