@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from deepagents.backends.state import create_file_data
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphRecursionError
@@ -50,12 +51,16 @@ from aiq_agent.common.citation_verification import source_entries_from_parent_co
 from aiq_agent.common.citation_verification import verify_citations
 
 from .custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS
+from .factory import AdaptiveResearchGraphRun
 from .factory import build_adaptive_research_graph
 from .factory import build_adaptive_research_middleware_set
 from .factory import build_adaptive_research_tool_set
 from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import ResearcherLoopGuardConfig
+from .subagents import ShallowSubagentCapture
 from .tools.finalize import EFFORT_TIER_PATH
 from .tools.finalize import FINAL_REPORT_META_PATH
 from .tools.finalize import FINAL_REPORT_PATH
@@ -100,6 +105,9 @@ class AdaptiveResearcherAgent:
         enforce_tier_tools: bool = False,
         single_loop_single_shot: bool = False,
         single_shot_search_budget: int = DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
+        single_shot_shallow_subagent: bool = False,
+        shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
+        shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
         dynamic_orchestrator_sections: bool = False,
         researcher_loop_guard: ResearcherLoopGuardConfig | None = None,
         request_termination: AdaptiveRequestTerminationConfig | None = None,
@@ -129,6 +137,13 @@ class AdaptiveResearcherAgent:
             single_shot_search_budget: Max direct source-tool calls the single_loop_single_shot
                 single_shot path may make before ComplexityRouterMiddleware withdraws the search
                 tools and forces finalize. Caps runaway search loops on cheap lookups.
+            single_shot_shallow_subagent: Route the single_shot tier to the shallow researcher,
+                registered as a DeepAgents CompiledSubAgent. Tier selection is unchanged; when
+                single_shot is declared the orchestrator delegates the original user query and the
+                shallow report becomes the authoritative answer. Takes precedence over
+                single_loop_single_shot.
+            shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-agent.
+            shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-agent.
             dynamic_orchestrator_sections: Render the orchestrator prompt trimmed per declared tier
                 (minimal router prompt on turn 1, per-tier prompt swapped in after declare_effort_tier).
                 Off by default renders the full prompt once at build time, exactly as before.
@@ -159,6 +174,9 @@ class AdaptiveResearcherAgent:
         self.enforce_tier_tools = enforce_tier_tools
         self.single_loop_single_shot = single_loop_single_shot
         self.single_shot_search_budget = single_shot_search_budget
+        self.single_shot_shallow_subagent = single_shot_shallow_subagent
+        self.shallow_subagent_max_llm_turns = shallow_subagent_max_llm_turns
+        self.shallow_subagent_max_tool_iterations = shallow_subagent_max_tool_iterations
         self.dynamic_orchestrator_sections = dynamic_orchestrator_sections
         self.researcher_loop_guard = researcher_loop_guard or ResearcherLoopGuardConfig()
         self.request_termination = request_termination or AdaptiveRequestTerminationConfig()
@@ -234,8 +252,8 @@ class AdaptiveResearcherAgent:
 
         return prompts
 
-    def _build_orchestrator_agent(self, state: AdaptiveResearchAgentState) -> Any:
-        """Build the orchestrator graph for the current state."""
+    def _build_orchestrator_agent(self, state: AdaptiveResearchAgentState) -> AdaptiveResearchGraphRun:
+        """Build the orchestrator graph bundle (runnable + run-scoped shallow capture)."""
         return build_adaptive_research_graph(
             llm_provider=self.llm_provider,
             state=state,
@@ -253,6 +271,9 @@ class AdaptiveResearcherAgent:
             enforce_tier_tools=self.enforce_tier_tools,
             single_loop_single_shot=self.single_loop_single_shot,
             single_shot_search_budget=self.single_shot_search_budget,
+            single_shot_shallow_subagent=self.single_shot_shallow_subagent,
+            shallow_subagent_max_llm_turns=self.shallow_subagent_max_llm_turns,
+            shallow_subagent_max_tool_iterations=self.shallow_subagent_max_tool_iterations,
             dynamic_orchestrator_sections=self.dynamic_orchestrator_sections,
             researcher_loop_guard=self.researcher_loop_guard,
             request_termination=self.request_termination,
@@ -365,6 +386,38 @@ class AdaptiveResearcherAgent:
         if not stripped or stripped == _WRITER_COMPLETION_MARKER:
             return None
         return stripped
+
+    @staticmethod
+    def _state_with_completed_shallow_capture(
+        state: AdaptiveResearchAgentState,
+        capture: ShallowSubagentCapture | None,
+    ) -> AdaptiveResearchAgentState:
+        """Return ``state`` with the shallow report merged in, when one is safely reusable.
+
+        Reached only from the timeout / recursion handlers. On those paths ``ainvoke`` raised, so
+        the sub-agent's ``files`` update — which reaches the caller on a normal completion — is
+        unavailable, and the run-scoped capture is the only way to recover a report the shallow
+        researcher already finished producing.
+
+        Three conditions must all hold, otherwise the caller keeps today's behaviour and builds a
+        deterministic partial: the shallow run completed, it produced content, and the run is
+        still on the ``single_shot`` tier (an escalated run must not silently return a shallow
+        answer authored for a lower effort level).
+        """
+        if capture is None or not capture.has_report or capture.declared_tier != "single_shot":
+            return state
+        logger.info(
+            "Recovering the completed shallow-researcher report (%d characters) after a forced exit",
+            len(capture.markdown),
+        )
+        files = {
+            **state.files,
+            FINAL_REPORT_PATH: create_file_data(capture.markdown),
+            FINAL_REPORT_META_PATH: create_file_data(
+                json.dumps({"researched": capture.researched, "tier": "single_shot"})
+            ),
+        }
+        return state.model_copy(update={"files": files})
 
     @staticmethod
     def _read_seed_file_text(files: dict[str, Any], path: str) -> str | None:
@@ -551,7 +604,7 @@ class AdaptiveResearcherAgent:
         if prepared_files != state.files:
             state = state.model_copy(update={"files": prepared_files})
         self._seed_parent_sources(state.files)
-        agent = self._build_orchestrator_agent(state)
+        built = self._build_orchestrator_agent(state)
 
         messages = state.messages
         if messages:
@@ -570,24 +623,39 @@ class AdaptiveResearcherAgent:
         timeout_seconds = self.request_termination.workflow_timeout_seconds
         try:
             async with asyncio.timeout(timeout_seconds):
-                result = await agent.ainvoke(state, config={"callbacks": self.callbacks} if self.callbacks else None)
+                result = await built.runnable.ainvoke(
+                    state, config={"callbacks": self.callbacks} if self.callbacks else None
+                )
         except TimeoutError:
             logger.warning(
                 "Adaptive Research exceeded the %ds workflow deadline; returning a deterministic partial result.",
                 timeout_seconds,
             )
-            return self._build_partial_result(state, reason=f"the {timeout_seconds}s workflow time limit was reached")
+            recovery_state = self._state_with_completed_shallow_capture(state, built.shallow_capture)
+            return self._build_partial_result(
+                recovery_state, reason=f"the {timeout_seconds}s workflow time limit was reached"
+            )
         except GraphRecursionError:
             logger.warning(
                 "Adaptive Research reached the graph recursion limit (%d); returning a deterministic partial result.",
                 self.request_termination.recursion_limit,
             )
-            return self._build_partial_result(state, reason="the maximum research step limit was reached")
+            recovery_state = self._state_with_completed_shallow_capture(state, built.shallow_capture)
+            return self._build_partial_result(recovery_state, reason="the maximum research step limit was reached")
         except Exception as ex:
             # Preserve the original observability: any other invocation failure is logged with a
             # traceback and re-raised (post-processing errors are handled by the block below).
             logger.error("Adaptive Research failed: %s", ex, exc_info=True)
             raise
+        finally:
+            # The shallow sub-agent runs in a detached asyncio task so concurrent `task` calls can
+            # share it, which means cancelling this coroutine does NOT stop it. Without this the
+            # workflow deadline would return a partial result while an orphaned shallow run kept
+            # issuing LLM and source-tool calls. Runs on every exit path — normal completion
+            # (a no-op, the task is done), timeout, recursion abort, and the CancelledError a
+            # client disconnect raises, which this method deliberately does not catch.
+            if built.shallow_capture is not None:
+                built.shallow_capture.cancel()
 
         try:
             # Resolve via the two sub-methods (not the combined extractor) so we know whether the

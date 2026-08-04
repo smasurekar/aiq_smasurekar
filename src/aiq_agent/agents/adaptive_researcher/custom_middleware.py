@@ -55,6 +55,8 @@ from aiq_agent.agents.deep_researcher.researcher_context import CURRENT_RESEARCH
 
 from .models import AdaptiveRequestTerminationConfig
 from .models import ResearcherLoopGuardConfig
+from .subagents import MAX_SHALLOW_ATTEMPTS
+from .subagents import SHALLOW_RESEARCHER_SUBAGENT
 from .tiers import tier_ceiling
 
 logger = logging.getLogger(__name__)
@@ -87,18 +89,35 @@ _SINGLE_SHOT_BUDGET_NUDGE = (
 # below these thresholds, the corresponding tools are hidden from the orchestrator's model
 # requests. These are the same knobs the POC's per-tier exposure table describes (§4.7 C).
 _ADVANCED_WEB_SEARCH_TOOL = "advanced_web_search_tool"
-_DELEGATION_TOOLS = ("task", "write_todos")
+_TASK_TOOL = "task"
+_WRITE_TODOS_TOOL = "write_todos"
+_DELEGATION_TOOLS = (_TASK_TOOL, _WRITE_TODOS_TOOL)
 _RUN_RESEARCH_BATCH_TOOL = "run_research_batch"
 _DECLARE_EFFORT_TIER_TOOL = "declare_effort_tier"
+# Kept as a literal rather than imported from factory.py, which imports this module.
+_FINALIZE_TOOL = "submit_final_report"
+# Argument names of the DeepAgents ``task`` tool (``TaskToolSchema``).
+_SUBAGENT_TYPE_ARG = "subagent_type"
+_TASK_DESCRIPTION_ARG = "description"
 
 
-def hidden_tools_for_ceiling(ceiling: str, *, allow_delegation: bool = False) -> set[str]:
+def hidden_tools_for_ceiling(
+    ceiling: str,
+    *,
+    allow_delegation: bool = False,
+    allow_shallow_subagent: bool = False,
+) -> set[str]:
     """Return the tool names to hide from the orchestrator for a given enabled-tiers ceiling.
 
     - ceiling below ``deep``  -> hide ``advanced_web_search_tool`` (deep-only heavy retrieval).
     - ceiling below ``standard`` (i.e. shallow-only: ``single_shot`` / ``direct``) -> also hide
       ``task`` and ``write_todos`` so the orchestrator cannot delegate or plan, unless
       ``allow_delegation`` preserves them for a parent-report delta request.
+
+    ``allow_shallow_subagent`` keeps ``task`` visible (but still hides ``write_todos``) when the
+    ``single_shot`` shallow sub-agent is wired in. Without it, a shallow-only fast lane
+    (``enabled_tiers: [single_shot]``) — the most likely place to enable that feature — would hide
+    the very tool the orchestrator needs to reach the sub-agent.
 
     Note: the orchestrator does not hold source tools directly (they live on the researcher and
     are reached via ``run_research_batch``), so hiding ``advanced_web_search_tool`` here is a
@@ -110,7 +129,41 @@ def hidden_tools_for_ceiling(ceiling: str, *, allow_delegation: bool = False) ->
         hidden.add(_ADVANCED_WEB_SEARCH_TOOL)
     if ceiling in ("direct", "single_shot") and not allow_delegation:
         hidden.update(_DELEGATION_TOOLS)
+        if allow_shallow_subagent:
+            hidden.discard(_TASK_TOOL)
     return hidden
+
+
+def _declared_tiers_in_current_tool_batch(state: object) -> set[str]:
+    """Return tiers declared by ``declare_effort_tier`` calls in the tool batch being executed.
+
+    ToolNode dispatches every tool call of one assistant turn together and their wrappers may run
+    in any order, so a middleware that consults only its own cached tier can observe a *stale*
+    tier when ``declare_effort_tier`` happens to be scheduled after its sibling. Reading the tool
+    calls of the AIMessage currently being executed makes a same-turn ``declare_effort_tier`` +
+    ``task`` (or + ``submit_final_report``) deterministic regardless of scheduling order.
+
+    Only the last message is inspected — never history, which upstream middleware (e.g.
+    SummarizationMiddleware) may have rewritten. Returns an empty set for an unrecognised state
+    shape, so callers fall back to their cached tier rather than failing.
+    """
+    messages = state.get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
+    if not messages:
+        return set()
+    last_message = list(messages)[-1]
+    tool_calls = getattr(last_message, "tool_calls", None)
+    if not tool_calls:
+        return set()
+    tiers: set[str] = set()
+    for tool_call in tool_calls:
+        name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", None)
+        if name != _DECLARE_EFFORT_TIER_TOOL:
+            continue
+        args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", None)
+        tier = args.get("tier") if isinstance(args, dict) else None
+        if isinstance(tier, str) and tier.strip():
+            tiers.add(tier.strip())
+    return tiers
 
 
 class ComplexityRouterMiddleware(AgentMiddleware):
@@ -166,11 +219,17 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         single_loop_single_shot: bool = False,
         single_shot_search_budget: int = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         prompt_renderer: Callable[[str], str] | None = None,
+        shallow_subagent_capture: object | None = None,
     ) -> None:
         """Compute hidden tools, preserving the citation-safe delta writer path when needed."""
+        # The shallow sub-agent is reached through `task`, so a shallow-only ceiling must not hide
+        # it. Typed loosely (``object``) to avoid importing the subagents package here — factory.py
+        # imports both, and this module must stay importable on its own.
+        self._shallow_capture = shallow_subagent_capture
         self._hidden_tool_names = hidden_tools_for_ceiling(
             tier_ceiling(enabled_tiers),
             allow_delegation=allow_delegation,
+            allow_shallow_subagent=shallow_subagent_capture is not None,
         )
         self._direct_source_tool_names: frozenset[str] = frozenset(
             name for t in (direct_source_tools or []) if (name := _request_tool_name(t)) is not None
@@ -246,6 +305,16 @@ class ComplexityRouterMiddleware(AgentMiddleware):
 
     def _filter_tools(self, tools: list[object]) -> list[object]:
         """Return the tool list filtered by ceiling rules and the single-shot swap when active."""
+        if self._shallow_capture is not None and self._declared_tier == "single_shot":
+            # single_shot is delegated wholesale to the shallow researcher: hide
+            # run_research_batch and every direct source tool (retrieval belongs to the
+            # sub-agent), and hide `task` on later model turns once execution has started or
+            # completed. The adapter's in-flight coalescing — not this next-turn filter — is the
+            # at-most-once guard for several `task` calls emitted together in one turn.
+            hidden = {_RUN_RESEARCH_BATCH_TOOL} | self._direct_source_tool_names
+            if getattr(self._shallow_capture, "invoked", False):
+                hidden.add(_TASK_TOOL)
+            return [t for t in tools if _request_tool_name(t) not in hidden]
         if self._single_loop_single_shot and self._direct_source_tool_names:
             if self._declared_tier == "single_shot":
                 if self._source_call_count >= self._search_budget:
@@ -290,6 +359,166 @@ class ComplexityRouterMiddleware(AgentMiddleware):
     async def awrap_model_call(self, request, handler):
         """Hide/swap tools and (when active) swap the system prompt before an async model call."""
         return await handler(request.override(**self._model_overrides(request)))
+
+
+class SingleShotShallowDelegationMiddleware(AgentMiddleware):
+    """Make shallow delegation and finalization deterministic on the ``single_shot`` tier.
+
+    Attached only when the shallow sub-agent is wired in. ``ComplexityRouterMiddleware`` controls
+    which *tool names* the model sees, but it cannot choose among the sub-agent names advertised
+    inside the shared ``task`` tool — so this middleware is the correctness boundary for
+    tier-aware routing. Responsibilities:
+
+    1. Resolve the effective tier from a declaration in the current tool-call batch, falling back
+       to the cached prior-turn tier; reject conflicting same-turn declarations.
+    2. Cache every accepted declared tier on both this middleware and the capture (including
+       escalation, so a later tier disables the finalizer override and the recovery path).
+    3. Reject ``task`` when no tier is known. On ``single_shot``, force the sub-agent type and
+       description to the shallow researcher and the original user query, and reject further
+       delegation once the attempt budget is spent. On every other tier, reject an attempted
+       shallow sub-type while leaving planner / writer / source-router delegation untouched.
+    4. Reject premature ``single_shot`` finalization while a shallow attempt is still viable.
+    5. Replace the accepted finalizer's ``markdown`` / ``researched`` / ``tier`` arguments with the
+       captured values — or, once the attempt budget is spent, let the finalizer through with
+       ``researched=True`` forced so the existing empty-registry gate decides the outcome.
+       Rejecting forever would livelock the run: with ``task`` exhausted and finalize blocked
+       there is no terminal action left, and only the turn budget or the workflow deadline would
+       end it.
+
+    Lifetime and concurrency match ``ComplexityRouterMiddleware``: one instance per top-level
+    request, built in ``build_adaptive_research_graph``, so request-scoped state lives on ``self``.
+    """
+
+    def __init__(self, *, capture: object, original_query: str) -> None:
+        """Store the run-scoped capture and the authoritative user query."""
+        self._capture = capture
+        self._original_query = original_query
+        self._declared_tier: str | None = None
+
+    @staticmethod
+    def _tool_call_of(request) -> dict:
+        """Return the request's tool call as a dict, or ``{}`` for an unrecognised shape."""
+        tool_call = getattr(request, "tool_call", None)
+        return tool_call if isinstance(tool_call, dict) else {}
+
+    def _effective_tier(self, request) -> tuple[str | None, bool]:
+        """Return ``(tier, conflicting)`` from the current tool-call batch, else the cached tier.
+
+        Scanning full message history remains unreliable (upstream middleware may rewrite it), but
+        the state ToolNode is executing does contain the AIMessage whose sibling tool calls are in
+        flight — so a same-turn ``declare_effort_tier`` is visible here no matter which wrapper
+        runs first.
+        """
+        declared_here = _declared_tiers_in_current_tool_batch(getattr(request, "state", None))
+        if len(declared_here) > 1:
+            return None, True
+        if declared_here:
+            return next(iter(declared_here)), False
+        return self._declared_tier, False
+
+    def _blocked(self, request, message: str) -> ToolMessage:
+        """Return a corrective error result without executing the tool.
+
+        Mirrors ``ResearcherLoopGuardMiddleware._blocked_result`` / ``OrchestratorLoopGuard`` — the
+        rejected call stays inside the agent loop so the model can correct itself.
+        """
+        tool_call = self._tool_call_of(request)
+        return ToolMessage(
+            content=message,
+            tool_call_id=tool_call.get("id", "shallow-delegation-guard"),
+            name=tool_call.get("name", _TASK_TOOL),
+            status="error",
+        )
+
+    async def awrap_tool_call(self, request, handler):
+        """Route ``task`` and rewrite ``submit_final_report`` according to the effective tier."""
+        tool_call = self._tool_call_of(request)
+        if not tool_call:
+            return await handler(request)
+        name = tool_call.get("name")
+        args = dict(tool_call.get("args") or {})
+
+        effective_tier, conflicting_declarations = self._effective_tier(request)
+        if conflicting_declarations and name in (_TASK_TOOL, _FINALIZE_TOOL):
+            logger.warning("single_shot shallow delegation: conflicting tier declarations in one turn")
+            return self._blocked(
+                request,
+                "Conflicting effort tiers were declared in one turn. Declare exactly one tier "
+                "before delegating or finalizing.",
+            )
+
+        if name == _DECLARE_EFFORT_TIER_TOOL:
+            tier = args.get("tier")
+            if isinstance(tier, str) and tier.strip():
+                self._declared_tier = tier.strip()
+                # Mirrored onto the capture so AdaptiveResearcherAgent.run can tell whether the
+                # run is still on single_shot before reusing a captured report after a timeout.
+                self._capture.declared_tier = self._declared_tier
+            return await handler(request)
+
+        if name == _TASK_TOOL:
+            if effective_tier is None:
+                return self._blocked(request, "Declare the effort tier before delegating to a subagent.")
+            if effective_tier == "single_shot":
+                if self._capture.exhausted:
+                    # Attempt budget spent. Stop re-delegating (each attempt is a full shallow
+                    # run) and point the model at the now-open finalize path.
+                    return self._blocked(
+                        request,
+                        f"The shallow researcher could not complete this request after "
+                        f"{MAX_SHALLOW_ATTEMPTS} attempts. Do not delegate again; call "
+                        "submit_final_report with whatever the gathered evidence supports.",
+                    )
+                args[_SUBAGENT_TYPE_ARG] = SHALLOW_RESEARCHER_SUBAGENT
+                args[_TASK_DESCRIPTION_ARG] = self._original_query
+                return await handler(request.override(tool_call={**tool_call, "args": args}))
+            if args.get(_SUBAGENT_TYPE_ARG) == SHALLOW_RESEARCHER_SUBAGENT:
+                return self._blocked(
+                    request,
+                    "shallow-researcher is available only on the single_shot tier; follow the "
+                    "declared tier's existing workflow.",
+                )
+            return await handler(request)
+
+        if name == _FINALIZE_TOOL and effective_tier == "single_shot":
+            if not self._capture.has_report:
+                if not self._capture.exhausted:
+                    # A shallow attempt is still viable: make the model delegate first.
+                    return self._blocked(
+                        request,
+                        "The single_shot shallow researcher has not completed. Call task with the "
+                        "shallow-researcher subagent before finalizing.",
+                    )
+                # Escape hatch: the budget is spent and there is no report to enforce, so let the
+                # finalizer run — but force researched=True so a failed research attempt cannot be
+                # recorded as a deliberate no-research answer. With no sources captured this
+                # reaches the existing EmptySourceRegistryError path, exactly as a failed
+                # single_shot run does today.
+                args["researched"] = True
+                args["tier"] = "single_shot"
+                logger.warning(
+                    "single_shot: shallow researcher exhausted after %d attempt(s) (last error: %s); "
+                    "allowing orchestrator-authored finalize",
+                    self._capture.attempts,
+                    self._capture.error_type or "unknown",
+                )
+                return await handler(request.override(tool_call={**tool_call, "args": args}))
+
+            submitted = args.get("markdown")
+            submitted_text = submitted.strip() if isinstance(submitted, str) else ""
+            if submitted_text != self._capture.markdown:
+                logger.info(
+                    "single_shot: replacing orchestrator-authored final report (%d chars) with the "
+                    "shallow-researcher report (%d chars)",
+                    len(submitted_text),
+                    len(self._capture.markdown),
+                )
+            args["markdown"] = self._capture.markdown
+            args["researched"] = self._capture.researched
+            args["tier"] = "single_shot"
+            return await handler(request.override(tool_call={**tool_call, "args": args}))
+
+        return await handler(request)
 
 
 _RESEARCHER_BUDGET_NUDGE = (
