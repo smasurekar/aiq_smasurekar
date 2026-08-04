@@ -139,3 +139,63 @@ async def test_workflow_wrapper_invokes_adaptive_agent_by_name():
     state_arg = agent_fn.ainvoke.call_args.args[0]
     assert state_arg.messages[0].content == "what is X?"
     assert "final answer" in str(response)
+
+
+# ---------------------------------------------------------------------------
+# single_shot shallow sub-agent config
+# ---------------------------------------------------------------------------
+
+
+def test_single_shot_shallow_subagent_defaults_false():
+    config = AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+    assert config.single_shot_shallow_subagent is False
+    assert config.shallow_subagent_max_llm_turns == 10
+    assert config.shallow_subagent_max_tool_iterations == 5
+
+
+def test_single_shot_shallow_subagent_can_be_enabled():
+    config = AdaptiveResearchAgentConfig(
+        orchestrator_llm="llm",
+        single_shot_shallow_subagent=True,
+        shallow_subagent_max_tool_iterations=3,
+    )
+    assert config.single_shot_shallow_subagent is True
+    assert config.shallow_subagent_max_tool_iterations == 3
+
+
+def test_shallow_subagent_bounds_reject_below_one():
+    with pytest.raises(ValueError):
+        AdaptiveResearchAgentConfig(orchestrator_llm="llm", shallow_subagent_max_tool_iterations=0)
+    with pytest.raises(ValueError):
+        AdaptiveResearchAgentConfig(orchestrator_llm="llm", shallow_subagent_max_llm_turns=0)
+
+
+def test_the_two_single_shot_modes_are_mutually_exclusive():
+    """Both own the single_shot execution path, so this is a config error, not a precedence rule."""
+    with pytest.raises(ValueError, match="enable at most one"):
+        AdaptiveResearchAgentConfig(
+            orchestrator_llm="llm",
+            single_shot_shallow_subagent=True,
+            single_loop_single_shot=True,
+        )
+
+
+def test_either_single_shot_mode_alone_is_accepted():
+    assert AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_loop_single_shot=True)
+    assert AdaptiveResearchAgentConfig(orchestrator_llm="llm", single_shot_shallow_subagent=True)
+    assert AdaptiveResearchAgentConfig(orchestrator_llm="llm")
+
+
+def test_agent_construction_forwards_every_new_field():
+    """Both AdaptiveResearcherAgent construction sites in register.py must stay in sync."""
+    import inspect
+
+    from aiq_agent.agents.adaptive_researcher import register as register_module
+
+    source = inspect.getsource(register_module)
+    for field in (
+        "single_shot_shallow_subagent=config.single_shot_shallow_subagent",
+        "shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns",
+        "shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations",
+    ):
+        assert source.count(field) == 2, f"{field} must be forwarded at both construction sites"

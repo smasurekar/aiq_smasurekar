@@ -415,3 +415,142 @@ class TestDynamicSectionWiring:
         router = next((m for m in kwargs["middleware"] if m.__class__.__name__ == "ComplexityRouterMiddleware"), None)
         if router is not None:
             assert router._prompt_renderer is None
+
+
+class TestShallowSubagentWiring:
+    """Wiring for the ``single_shot`` shallow compiled sub-agent (opt-in, default off)."""
+
+    @staticmethod
+    def _subagent_names(captured):
+        return [spec["name"] for spec in captured["subagents"]]
+
+    @staticmethod
+    def _has_delegation_guard(captured):
+        return any(type(m).__name__ == "SingleShotShallowDelegationMiddleware" for m in captured["middleware"])
+
+    def test_off_by_default(self, mock_llm_provider):
+        captured = _build_and_capture(mock_llm_provider)
+        assert "shallow-researcher" not in self._subagent_names(captured)
+        assert self._has_delegation_guard(captured) is False
+
+    def test_registered_when_enabled(self, mock_llm_provider):
+        captured = _build_and_capture(mock_llm_provider, single_shot_shallow_subagent=True)
+        assert "shallow-researcher" in self._subagent_names(captured)
+        # The existing specs must survive alongside it.
+        assert {"planner-agent", "writer-agent"} <= set(self._subagent_names(captured))
+        assert self._has_delegation_guard(captured) is True
+
+    def test_requires_single_shot_to_be_an_enabled_tier(self, mock_llm_provider):
+        captured = _build_and_capture(
+            mock_llm_provider,
+            single_shot_shallow_subagent=True,
+            enabled_tiers=["direct", "standard", "deep"],
+        )
+        assert "shallow-researcher" not in self._subagent_names(captured)
+        assert self._has_delegation_guard(captured) is False
+
+    def test_excluded_for_parent_report_delta_requests(self, mock_llm_provider):
+        """A delta rewrite must keep the citation-safe planned-writer pipeline."""
+        captured = _build_and_capture(
+            mock_llm_provider,
+            single_shot_shallow_subagent=True,
+            state=AdaptiveResearchAgentState(
+                messages=[HumanMessage(content="update it")],
+                files={"/shared/parent_report_context.json": {"content": "{}"}},
+            ),
+        )
+        assert "shallow-researcher" not in self._subagent_names(captured)
+        assert self._has_delegation_guard(captured) is False
+
+    def test_orchestrator_holds_no_direct_source_tools_in_shallow_mode(self, mock_llm_provider):
+        """Retrieval belongs to the sub-agent; the orchestrator must not hold source tools."""
+        captured = _build_and_capture(mock_llm_provider, single_shot_shallow_subagent=True)
+        assert "web_search_tool" not in [t.name for t in captured["tools"]]
+
+    def test_task_survives_a_shallow_only_ceiling(self, mock_llm_provider):
+        """`enabled_tiers: [single_shot]` otherwise hides the very tool that reaches the subagent."""
+        from aiq_agent.agents.adaptive_researcher.custom_middleware import ComplexityRouterMiddleware
+
+        captured = _build_and_capture(
+            mock_llm_provider,
+            single_shot_shallow_subagent=True,
+            enabled_tiers=["single_shot"],
+        )
+        router = next(m for m in captured["middleware"] if isinstance(m, ComplexityRouterMiddleware))
+        assert "task" not in router._hidden_tool_names
+        assert "write_todos" in router._hidden_tool_names
+
+    def test_graph_bundle_exposes_the_same_capture_the_middleware_uses(self, mock_llm_provider):
+        from aiq_agent.agents.adaptive_researcher.factory import AdaptiveResearchGraphRun
+
+        graph = MagicMock()
+        graph.with_config = MagicMock(return_value=graph)
+        with (
+            patch("aiq_agent.agents.adaptive_researcher.factory.create_deep_agent", return_value=graph) as create,
+            patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph),
+            patch(
+                "aiq_agent.agents.deep_researcher.factory.create_summarization_middleware",
+                return_value=_FakeSummarizationMiddleware(),
+            ),
+        ):
+            agent = AdaptiveResearcherAgent(
+                llm_provider=mock_llm_provider,
+                tools=[web_search_tool],
+                single_shot_shallow_subagent=True,
+            )
+            built = agent._build_orchestrator_agent(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        guard = next(
+            m
+            for m in create.call_args.kwargs["middleware"]
+            if type(m).__name__ == "SingleShotShallowDelegationMiddleware"
+        )
+        assert isinstance(built, AdaptiveResearchGraphRun)
+        assert built.shallow_capture is not None
+        assert built.shallow_capture is guard._capture
+
+    def test_bundle_capture_is_none_when_disabled(self, mock_llm_provider):
+        graph = MagicMock()
+        graph.with_config = MagicMock(return_value=graph)
+        with (
+            patch("aiq_agent.agents.adaptive_researcher.factory.create_deep_agent", return_value=graph),
+            patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph),
+            patch(
+                "aiq_agent.agents.deep_researcher.factory.create_summarization_middleware",
+                return_value=_FakeSummarizationMiddleware(),
+            ),
+        ):
+            agent = AdaptiveResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+            built = agent._build_orchestrator_agent(AdaptiveResearchAgentState(messages=[HumanMessage(content="q")]))
+        assert built.shallow_capture is None
+
+    def test_prompt_describes_the_delegated_path_only_when_enabled(self, mock_llm_provider):
+        on = _build_and_capture(mock_llm_provider, single_shot_shallow_subagent=True)["system_prompt"]
+        off = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "shallow-researcher" in on
+        assert "**Delegated path**" in on
+        assert "shallow-researcher" not in off
+
+    def test_dynamic_single_shot_render_names_the_subagent(self, mock_llm_provider):
+        """The instructions live in the `workflow` section, which survives prompt trimming."""
+        template = load_prompt(AGENT_DIR / "prompts", "orchestrator")
+        rendered = render_prompt_template(
+            template,
+            clarifier_result=None,
+            tools=[],
+            retrieval_tools=[],
+            enable_source_router=False,
+            max_research_concurrency=6,
+            execution_enabled=False,
+            parent_report_context_available=False,
+            enabled_tiers=["single_shot"],
+            tier_profiles=enabled_tier_profiles(["single_shot"]),
+            triage_hint="",
+            single_loop_single_shot=False,
+            single_shot_search_budget=2,
+            single_shot_shallow_subagent=True,
+            current_datetime="2026-01-01 00:00:00",
+            user_info=None,
+            available_documents=[],
+            sections=sections_for_tier("single_shot", enabled=["single_shot"]),
+        )
+        assert "shallow-researcher" in rendered

@@ -832,3 +832,70 @@ class TestConsecutiveThinkGuardMiddleware:
             result = await self.mw.awrap_tool_call(_think_request(), handler)
         # Should not raise; returns original msg
         assert result is msg
+
+
+# ---------------------------------------------------------------------------
+# Shallow sub-agent mode — tool exposure
+# ---------------------------------------------------------------------------
+
+
+class TestShallowSubagentToolExposure:
+    """`task` must stay reachable, and retrieval must move entirely to the sub-agent."""
+
+    @staticmethod
+    def _router(capture):
+        return ComplexityRouterMiddleware(
+            enabled_tiers=["direct", "single_shot", "standard", "deep"],
+            shallow_subagent_capture=capture,
+        )
+
+    @staticmethod
+    def _tools():
+        return [
+            _make_tool("task"),
+            _make_tool("submit_final_report"),
+            _make_tool("get_verified_sources"),
+            _make_tool(_RUN_RESEARCH_BATCH_TOOL),
+            _make_tool("web_search_tool"),
+        ]
+
+    def test_ceiling_keeps_task_but_still_hides_write_todos(self):
+        from aiq_agent.agents.adaptive_researcher.custom_middleware import hidden_tools_for_ceiling
+
+        hidden = hidden_tools_for_ceiling("single_shot", allow_shallow_subagent=True)
+        assert "task" not in hidden
+        assert "write_todos" in hidden
+        # Unchanged without the flag, and unchanged for a deep ceiling.
+        assert "task" in hidden_tools_for_ceiling("single_shot")
+        assert hidden_tools_for_ceiling("deep", allow_shallow_subagent=True) == set()
+
+    def test_research_batch_hidden_and_task_exposed_on_single_shot(self):
+        capture = MagicMock(invoked=False)
+        router = self._router(capture)
+        router._declared_tier = "single_shot"
+        names = [t.name for t in router._filter_tools(self._tools())]
+        assert "task" in names
+        assert _RUN_RESEARCH_BATCH_TOOL not in names
+        assert "submit_final_report" in names
+
+    def test_task_hidden_after_the_subagent_has_been_invoked(self):
+        capture = MagicMock(invoked=True)
+        router = self._router(capture)
+        router._declared_tier = "single_shot"
+        names = [t.name for t in router._filter_tools(self._tools())]
+        assert "task" not in names
+        assert "submit_final_report" in names
+
+    def test_other_tiers_keep_the_research_batch_tool(self):
+        capture = MagicMock(invoked=False)
+        router = self._router(capture)
+        router._declared_tier = "deep"
+        names = [t.name for t in router._filter_tools(self._tools())]
+        assert _RUN_RESEARCH_BATCH_TOOL in names
+        assert "task" in names
+
+    def test_before_any_declaration_the_research_batch_tool_remains(self):
+        capture = MagicMock(invoked=False)
+        router = self._router(capture)
+        names = [t.name for t in router._filter_tools(self._tools())]
+        assert _RUN_RESEARCH_BATCH_TOOL in names
