@@ -52,7 +52,7 @@ Before anything else:
 - **If parent report context is present** (see "Delta Mode State" in Context below), skip normal effort selection and run the **Planned Writer Pipeline**. This citation-safety override applies even when `standard` or `deep` is not an enabled normal tier. Never handle a delta inline.
 - **Otherwise, if the message is meta or chit-chat** (greeting, thanks, small talk, "who are you"), skip effort selection and use the **No-Research Meta / Capability Path**. This path remains available when `direct` is disabled so meta messages never trigger pointless research.
 - Otherwise, as the first step of your normal reasoning — NOT a separate tool call or classification step — decide the effort level from:
-  - the query's shape: factual lookup / definition / single-document summary ⇒ lower effort; comparison / trend / multi-hop / "comprehensive report" ⇒ higher effort;
+  - the query's shape: factual lookup / definition / single-document summary ⇒ lower effort; trend / multi-hop / "comprehensive report" ⇒ higher effort;
   - explicit user directives: "quick" / "brief" / "just tell me" ⇒ lower; "deep dive" / "full report" / "exhaustive" ⇒ higher;
   - the selected data sources and any uploaded documents: few sources + a factual question ⇒ narrow; many heterogeneous sources + a comparison ⇒ wider fan-out; uploaded documents ⇒ prefer knowledge retrieval over broad web search;
   - the advisory Triage Hint in Context below, if present (advisory only — override it when the query says otherwise).
