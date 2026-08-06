@@ -1,0 +1,194 @@
+# FreshQA evaluation of the Adaptive Researcher + shallow compiled subagent workflow (smoke-10).
+#
+# This is configs/config_adaptive_shallow_subagent.yml adapted for `nat eval`:
+#   * the aiq_api front_end block is dropped (eval runs the workflow in-process,
+#     it does not serve the HTTP API),
+#   * a NIM judge LLM is added for the FreshEval-Relaxed evaluator,
+#   * an `eval:` section points at the converted FreshQA dataset (smoke-10 slice).
+#
+# Key difference vs config_adaptive_frag_freshqa.yml — the single_shot tier is handled
+# by the shallow compiled subagent rather than an inline orchestrator loop:
+#   single_loop_single_shot: false        (orchestrator no longer searches inline)
+#   single_shot_shallow_subagent: true    (CompiledSubAgent answers the tier instead)
+#   shallow_subagent_max_tool_iterations: 5
+#   shallow_subagent_max_llm_turns: 10
+# The two flags are mutually exclusive; enabling both is a config error.
+#
+# Required env vars in deploy/.env:
+#   NVIDIA_API_KEY, TAVILY_API_KEY
+#   RAG_SERVER_URL, RAG_INGEST_URL
+#   COLLECTION_NAME (defaults to kg_rag if unset)
+#
+# Run from the repo root:
+#   dotenv -f deploy/.env run -- \
+#     nat eval --config_file frontends/benchmarks/freshqa/configs/config_adaptive_shallow_subagent_freshqa.yml
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      # WARNING keeps the terminal readable: the agent's per-step callback chatter is
+      # logged at INFO, which is what floods the console during a run. Warnings and
+      # errors still surface immediately. Full detail goes to the file handler below.
+      console:
+        _type: console
+        level: WARNING
+      # Mirror runtime logs to a file so a long eval is reviewable after the terminal
+      # scrolls away or the session ends. The parent directory must already exist —
+      # NAT's FileHandler does not create it (see the `mkdir -p` in the runbook).
+      # INFO, not DEBUG: `nat` sets the root logger to INFO by default, so DEBUG
+      # records never reach any handler unless you also pass `nat --log-level debug`.
+      file:
+        _type: file
+        path: frontends/benchmarks/freshqa/results/adaptive_shallow_subagent_smoke10/eval.log
+        level: INFO
+        mode: overwrite
+
+llms:
+  nemotron_super_llm:
+    _type: nim
+    # Inference Hub model details:
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+  # FreshEval judge. Deliberately points at the same endpoint/key as the agent LLM so no
+  # additional API key is needed. Low temperature and thinking disabled keep the judge's
+  # output in the strict `comment: ... / evaluation: ...` shape the evaluator parses.
+  # Swap model_name (or switch to `_type: openai` with OPENAI_API_KEY) to change judges.
+  judge_llm:
+    _type: nim
+    model_name: azure/openai/gpt-5.2
+    base_url: "https://inference-api.nvidia.com/v1"
+    temperature: 0.1
+    # max_tokens: 4096
+    # num_retries: 5
+    # chat_template_kwargs:
+    #   enable_thinking: false
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: foundational_rag
+    collection_name: ${COLLECTION_NAME:-kg_rag}
+    top_k: 3
+    rag_url: ${RAG_SERVER_URL:-http://localhost:8081}
+    ingest_url: ${RAG_INGEST_URL:-http://localhost:8082}
+    timeout: 300
+
+  adaptive_research_agent:
+    _type: adaptive_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: nemotron_super_llm
+    source_router_llm: nemotron_super_llm
+    researcher_llm: nemotron_super_llm
+    planner_llm: nemotron_super_llm
+    writer_llm: nemotron_super_llm
+    enabled_tiers: [direct, single_shot, standard, deep]
+    enforce_tier_tools: false
+    # The two single_shot modes are mutually exclusive (validated at config load).
+    single_loop_single_shot: false
+    single_shot_shallow_subagent: true
+    # Retrieval budget inside the shallow subagent — the analogue of single_shot_search_budget
+    # on the inline path. Its own bounded loop, not the orchestrator's.
+    shallow_subagent_max_tool_iterations: 5
+    shallow_subagent_max_llm_turns: 10
+    dynamic_orchestrator_sections: true
+    researcher_loop_guard:
+      enabled: true
+      source_call_budgets:
+        low: 5
+        medium: 10
+        high: 20
+      max_identical_source_calls: 2
+      max_consecutive_thinks: 3
+    request_termination:
+      enabled: true
+      standard:
+        max_batch_calls: 3
+        max_total_research_queries: 9
+        max_orchestrator_turns: 24
+      deep:
+        max_batch_calls: 6
+        max_total_research_queries: 24
+        max_orchestrator_turns: 100
+      max_identical_research_queries: 1
+      workflow_timeout_seconds: 2400
+      fallback_finalizer_timeout_seconds: 60
+      recursion_limit: 250
+    enable_source_router: false
+    exclude_tools:
+      # Matches configs/config_adaptive_shallow_subagent.yml: the knowledge layer is built
+      # but kept out of the agent's tool set, so FreshQA is answered from web search only.
+      - knowledge_search
+
+workflow:
+  _type: adaptive_research_workflow
+
+eval:
+  general:
+    workflow_alias: "freshqa_eval_adaptive_shallow_subagent"
+    output_dir: frontends/benchmarks/freshqa/results/adaptive_shallow_subagent_smoke10
+    # The adaptive agent is heavy (up to a 2400s request budget); keep concurrency low
+    # for the smoke run and raise it once the pipeline is validated.
+    max_concurrency: 2
+    # Emits all_requests_profiler_traces.json + standardized_data_all.csv into output_dir.
+    # Required for the latency / token / LLM-call-count metrics — without this block the
+    # eval reports accuracy only.
+    profiler:
+      # Per-call ISL, OSL, TPS and latency. This is what carries the token counts.
+      compute_llm_metrics: true
+      # Estimate expected wall-clock runtime at the observed concurrency.
+      workflow_runtime_forecast: true
+      # Inter-query prompt-token reuse; cheap and useful for caching decisions.
+      token_uniqueness_forecast: true
+      # Keep raw prompt/completion text out of the CSV so it stays parseable.
+      csv_exclude_io_text: true
+      # Critical path / nested bottlenecks in the agent call graph.
+      bottleneck_analysis:
+        enable_nested_stack: true
+    dataset:
+      _type: json
+      file_path: frontends/benchmarks/freshqa/data/FreshQA_v042126_smoke10.json
+      structure:
+        question_key: question
+        answer_key: expected_output
+        generated_answer_key: generated_answer
+
+  evaluators:
+    freshqa:
+      _type: freshqa_evaluator
+      llm_name: judge_llm
+      # Must be the same file as the dataset above so split/fact_type/num_hops metadata
+      # joins onto the results for the per-dimension accuracy breakdowns.
+      dataset_file: frontends/benchmarks/freshqa/data/FreshQA_v042126_smoke10.json
