@@ -72,7 +72,7 @@ TIER_PROFILES: dict[str, TierProfile] = {
     ),
     "standard": TierProfile(
         name="standard",
-        when="a lightly multi-part question",
+        when="a lightly multi-part question, or a comparison across a bounded set of entities",
         planner="skip for inline; required for writer-agent",
         writer="inline or Planned Writer Pipeline",
         width="~3–5 queries",
@@ -81,7 +81,7 @@ TIER_PROFILES: dict[str, TierProfile] = {
     ),
     "deep": TierProfile(
         name="deep",
-        when="comparison / trend / multi-hop / 'comprehensive report'",
+        when="trend / multi-hop / 'comprehensive report'",
         planner="use planner-agent",
         writer="delegate to writer-agent",
         width="up to the width cap",
