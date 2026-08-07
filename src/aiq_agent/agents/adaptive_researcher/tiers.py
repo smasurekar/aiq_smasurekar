@@ -144,10 +144,17 @@ def tier_ceiling(enabled: list[str] | None) -> str:
 # re-sending the full deep/writer/delta machinery on cheap ``direct``/``single_shot``
 # runs, we render only the sections a given mode needs.
 #
-# Flow (see misc/adaptive_orchestrator_dynamic_sections_plan.md):
-#   * Turn 1 uses the "router" mode — a minimal prompt that only teaches tier selection.
-#   * Once the model calls ``declare_effort_tier``, ComplexityRouterMiddleware swaps in the
-#     trimmed prompt for the declared tier (or "delta" for parent-report rewrites).
+# Flow (see misc/adaptive-orchestrator-skip-tier-turn-plan.md):
+#   * Turn 1 uses the "catalog" mode — the union of every enabled tier's sections, so the
+#     model can select a tier AND take that tier's first action in the same turn.
+#   * Once the tier is resolved (declared in that same batch, or inferred from the action),
+#     ComplexityRouterMiddleware swaps in the trimmed prompt for that tier (or "delta" for
+#     parent-report rewrites) for the rest of the run.
+#
+# The catalog is computed from the enabled subset rather than stored as a preset: a
+# shallow-only config must not pay for the deep/writer machinery it can never reach. That is
+# why ``SECTION_PRESETS`` holds only the per-tier modes and ``sections_for_catalog`` derives
+# the turn-1 map dynamically.
 
 # Every section flag the template understands, in template render order. Listing them here
 # (a) makes a preset that forgets a flag obvious, and (b) lets ``sections_for_tier`` build a
@@ -176,7 +183,10 @@ SECTION_FLAGS: tuple[str, ...] = (
 # listed is OFF. Encodes the tier→sections table in the design doc (§3). Modeling presets as
 # ON-sets (rather than full boolean dicts) keeps them short and hard to misread.
 #
-#   router      — turn-1 selection only: how to pick a tier + declare it (no execution).
+# There is deliberately no "catalog" entry: the turn-1 catalog depends on which tiers are
+# enabled, while these values are static frozensets. ``sections_for_catalog`` unions the
+# relevant entries below instead.
+#
 #   direct      — no research; answer inline via the ### direct workflow block, then finalize.
 #   single_shot — one inline retrieval batch; needs the research loop + inline citation rules.
 #   standard    — union of the inline and writer branches (so either path is fully specified):
@@ -187,7 +197,6 @@ SECTION_FLAGS: tuple[str, ...] = (
 # ``escalation`` is listed for tiers that *could* step up; sections_for_tier() drops it when no
 # higher tier is enabled (nothing to escalate to).
 SECTION_PRESETS: dict[str, frozenset[str]] = {
-    "router": frozenset({"intro", "effort_catalog", "effort_selection", "delta_rule", "finalize", "important"}),
     "direct": frozenset({"intro", "workflow", "finalize", "important"}),
     "single_shot": frozenset(
         {
@@ -268,13 +277,49 @@ def escalation_possible(tier: str, enabled: list[str] | None) -> bool:
 def sections_for_tier(mode: str, *, enabled: list[str] | None) -> dict[str, bool]:
     """Expand a preset into a full ``{flag: bool}`` map for rendering orchestrator.j2.
 
-    ``mode`` is a key of ``SECTION_PRESETS`` ("router", a tier name, or "delta"). The result
-    always contains every flag in ``SECTION_FLAGS`` (in order) so rendering is deterministic
-    and byte-stable per mode. The ``escalation`` section is included only when the preset turns
-    it on *and* a higher enabled tier actually exists (``escalation_possible``).
+    ``mode`` is a key of ``SECTION_PRESETS`` (a tier name or "delta"). The result always
+    contains every flag in ``SECTION_FLAGS`` (in order) so rendering is deterministic and
+    byte-stable per mode. The ``escalation`` section is included only when the preset turns it
+    on *and* a higher enabled tier actually exists (``escalation_possible``).
     """
     on_flags = SECTION_PRESETS[mode]
     resolved = {flag: (flag in on_flags) for flag in SECTION_FLAGS}
     if resolved["escalation"]:
         resolved["escalation"] = escalation_possible(mode, enabled)
+    return resolved
+
+
+def sections_for_catalog(enabled: list[str] | None) -> dict[str, bool]:
+    """Build the turn-1 "catalog" section map: the union of every enabled tier's sections.
+
+    Catalog mode replaces the old two-turn router flow. The orchestrator must be able to pick a
+    tier *and* run that tier's first step in one turn, so the turn-1 prompt has to carry every
+    enabled tier's procedure — but only the enabled ones, which is why this is derived rather
+    than stored as a static preset (a shallow-only config must not pay for the deep/writer
+    machinery it can never reach).
+
+    Rules:
+
+    - union of ``SECTION_PRESETS`` over the enabled tiers, so every reachable procedure block is
+      described;
+    - ``effort_catalog`` / ``effort_selection`` forced on — the model is choosing, so it needs
+      the level descriptions and the selection contract;
+    - ``delta_rule`` forced OFF: a parent-report request is detected at graph build time and gets
+      the dedicated "delta" prompt instead, so a normal catalog never needs the delta machinery;
+    - ``escalation`` kept only when more than one tier is enabled (nothing to step up to
+      otherwise).
+
+    Returns a fully populated map in ``SECTION_FLAGS`` order so the rendered prefix is
+    byte-identical for a given enabled set (prompt KV-cache stability).
+    """
+    allowed = normalize_enabled_tiers(enabled)
+    on_flags: set[str] = set()
+    for tier in allowed:
+        on_flags |= SECTION_PRESETS[tier]
+    on_flags |= {"effort_catalog", "effort_selection"}
+    on_flags.discard("delta_rule")
+    resolved = {flag: (flag in on_flags) for flag in SECTION_FLAGS}
+    # More than one enabled tier means some tier can step up; with exactly one there is nowhere
+    # to escalate to, so the section would be dead text.
+    resolved["escalation"] = len(allowed) > 1
     return resolved

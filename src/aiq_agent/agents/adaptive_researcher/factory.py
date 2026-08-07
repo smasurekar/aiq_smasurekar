@@ -67,6 +67,7 @@ from .custom_middleware import ConsecutiveThinkGuardMiddleware
 from .custom_middleware import OrchestratorLoopGuardMiddleware
 from .custom_middleware import ResearcherLoopGuardMiddleware
 from .custom_middleware import SingleShotShallowDelegationMiddleware
+from .custom_middleware import TierResolver
 from .models import AdaptiveRequestTerminationConfig
 from .models import AdaptiveResearchAgentState
 from .models import AdaptiveResearchPlan
@@ -76,6 +77,7 @@ from .subagents import build_shallow_researcher_subagent
 from .subagents import last_human_text
 from .tiers import SECTION_PRESETS
 from .tiers import enabled_tier_profiles
+from .tiers import sections_for_catalog
 from .tiers import sections_for_tier
 from .tools.finalize import build_declare_effort_tier_tool
 from .tools.finalize import build_submit_final_report_tool
@@ -279,6 +281,15 @@ def build_adaptive_research_graph(
         visibility_middleware=cross_cutting_middleware,
     )
 
+    # --- Dynamic per-tier prompt sections (opt-in) -------------------------------------------
+    # Parent-report delta rewrites are never routed: they always get the full delta prompt and no
+    # mid-run swap, because the citation-safe planned-writer path must never be trimmed away.
+    # Resolved up-front because catalog mode changes the declaration tool's description and the
+    # prompt's selection contract, both of which are built below.
+    is_delta = context.parent_report_context_available
+    dynamic_sections_active = dynamic_orchestrator_sections and not is_delta
+    catalog_mode = dynamic_sections_active
+
     researcher_runnable = build_researcher_runnable(
         researcher_model=context.llm_provider.get(LLMRole.RESEARCHER),
         researcher_tools=context.tool_set.researcher_tools,
@@ -303,7 +314,7 @@ def build_adaptive_research_graph(
         max_research_concurrency=max_research_concurrency,
         source_registry_middleware=source_registry_middleware,
     )
-    declare_effort_tier_tool = build_declare_effort_tier_tool(backend=context.backend)
+    declare_effort_tier_tool = build_declare_effort_tier_tool(backend=context.backend, catalog_mode=catalog_mode)
     submit_final_report_tool = build_submit_final_report_tool(backend=context.backend)
 
     # --- Shallow-researcher sub-agent (opt-in, single_shot only) -----------------------------
@@ -346,12 +357,6 @@ def build_adaptive_research_graph(
         if t.name not in direct_source_tool_names
     ]
 
-    # --- Dynamic per-tier prompt sections (opt-in) -------------------------------------------
-    # Parent-report delta rewrites are never routed: they always get the full delta prompt and
-    # no mid-run swap, because the citation-safe planned-writer path must never be trimmed away.
-    is_delta = context.parent_report_context_available
-    dynamic_sections_active = dynamic_orchestrator_sections and not is_delta
-
     def _orchestrator_render_kwargs(tiers_for_mode: list[str]) -> dict[str, Any]:
         """The render kwargs shared by every orchestrator render (build-time and per-tier swap).
 
@@ -382,20 +387,36 @@ def build_adaptive_research_graph(
             # Selects the delegated single_shot procedure block. Runtime enforcement lives in
             # SingleShotShallowDelegationMiddleware; the prompt only optimizes model behavior.
             "single_shot_shallow_subagent": shallow_mode,
+            # Switches the selection contract to "declare together with your first action".
+            # Off for the flag-off path, which keeps the declaration-first contract verbatim.
+            "catalog_mode": catalog_mode,
         }
 
     def _render_orchestrator(mode: str) -> str:
-        """Render the orchestrator prompt for one mode: "router", a tier name, or "delta".
+        """Render the orchestrator prompt for one mode: "catalog", a tier name, or "delta".
 
         Reuses ``context.render_prompt`` so the shared context (datetime, sandbox dirs, user_info,
-        ...) is injected identically to the build-time render. ``sections_for_tier`` trims the
-        template to just the blocks that mode needs; ``enabled_tiers`` is collapsed to the mode so
-        ## Workflow shows only that tier's procedure. An unrecognized declared tier (e.g. the meta
-        path's "meta") falls back to the full, untrimmed prompt so no guidance is ever missing.
+        ...) is injected identically to the build-time render.
+
+        - ``catalog`` (turn 1) renders the union of every enabled tier's sections and keeps the
+          full ``enabled_tiers`` list, so ## Workflow describes every procedure the model may
+          choose between — that is what lets it select and act in one turn.
+        - A tier name renders only that tier's sections and collapses ``enabled_tiers`` to it, so
+          the swapped-in prompt carries just the procedure actually in use.
+        - ``delta`` keeps the full enabled set plus the delta rule.
+
+        An unrecognized tier (e.g. the meta path's "meta") falls back to the full, untrimmed
+        prompt so no guidance is ever missing.
         """
+        if mode == "catalog":
+            return context.render_prompt(
+                "orchestrator",
+                **_orchestrator_render_kwargs(enabled_tiers),
+                sections=sections_for_catalog(enabled_tiers),
+            )
         if mode not in SECTION_PRESETS:
             return context.render_prompt("orchestrator", **_orchestrator_render_kwargs(enabled_tiers))
-        tiers_for_mode = enabled_tiers if mode in ("router", "delta") else [mode]
+        tiers_for_mode = enabled_tiers if mode == "delta" else [mode]
         return context.render_prompt(
             "orchestrator",
             **_orchestrator_render_kwargs(tiers_for_mode),
@@ -405,14 +426,30 @@ def build_adaptive_research_graph(
     # Choose the prompt baked in at build time:
     #   * flag off        -> full untrimmed prompt (byte-identical to the pre-change behavior);
     #   * flag on + delta  -> the full delta prompt (no swapping this run);
-    #   * flag on + normal -> a minimal "router" prompt; the middleware swaps in the per-tier
-    #                         prompt once declare_effort_tier fires.
+    #   * flag on + normal -> the "catalog" prompt: every enabled tier's procedure, so the model
+    #                         can select a tier and take its first action in the same turn. The
+    #                         middleware swaps in the per-tier prompt from turn 2.
     if not dynamic_orchestrator_sections:
         orchestrator_system_prompt = context.render_prompt("orchestrator", **_orchestrator_render_kwargs(enabled_tiers))
     elif is_delta:
         orchestrator_system_prompt = _render_orchestrator("delta")
     else:
-        orchestrator_system_prompt = _render_orchestrator("router")
+        orchestrator_system_prompt = _render_orchestrator("catalog")
+
+    # One resolver per request, shared by every tier-aware middleware so they cannot disagree
+    # about the tier of a batch. Only built for catalog mode; with the flag off each middleware
+    # keeps its own declaration-first cache exactly as before.
+    tier_resolver = (
+        TierResolver(
+            enabled_tiers=enabled_tiers,
+            single_loop_single_shot=single_loop_single_shot and not shallow_mode,
+            shallow_mode=shallow_mode,
+            direct_source_tool_names=direct_source_tool_names,
+            backend=context.backend,
+        )
+        if catalog_mode
+        else None
+    )
     # -----------------------------------------------------------------------------------------
 
     # Reuse the deep researcher's subagent specs, but retype the planner's structured output to
@@ -454,7 +491,7 @@ def build_adaptive_research_graph(
     if request_termination.enabled:
         orchestrator_middleware = [
             *orchestrator_middleware,
-            OrchestratorLoopGuardMiddleware(config=request_termination),
+            OrchestratorLoopGuardMiddleware(config=request_termination, tier_resolver=tier_resolver),
         ]
     if enforce_tier_tools or single_loop_single_shot or dynamic_sections_active or shallow_mode:
         orchestrator_middleware = [
@@ -474,6 +511,8 @@ def build_adaptive_research_graph(
                 # Keeps `task` reachable under a shallow-only ceiling and hides the research
                 # batch / source tools once single_shot is declared.
                 shallow_subagent_capture=shallow_capture,
+                # Catalog mode: the batch-wide tier decision and its enforcement point.
+                tier_resolver=tier_resolver,
             ),
         ]
     if shallow_mode:
@@ -482,7 +521,11 @@ def build_adaptive_research_graph(
         # single_shot delegation and makes the captured report authoritative at finalize time.
         orchestrator_middleware = [
             *orchestrator_middleware,
-            SingleShotShallowDelegationMiddleware(capture=shallow_capture, original_query=original_query),
+            SingleShotShallowDelegationMiddleware(
+                capture=shallow_capture,
+                original_query=original_query,
+                tier_resolver=tier_resolver,
+            ),
         ]
 
     agent = create_deep_agent(

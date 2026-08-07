@@ -43,6 +43,7 @@ import json
 import logging
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
@@ -58,6 +59,7 @@ from .models import ResearcherLoopGuardConfig
 from .subagents import MAX_SHALLOW_ATTEMPTS
 from .subagents import SHALLOW_RESEARCHER_SUBAGENT
 from .tiers import tier_ceiling
+from .tools.finalize import EFFORT_TIER_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,487 @@ def _declared_tiers_in_current_tool_batch(state: object) -> set[str]:
     return tiers
 
 
+# ---------------------------------------------------------------------------------------------
+# Catalog-mode tier resolution
+# ---------------------------------------------------------------------------------------------
+# Under catalog mode the orchestrator no longer spends a turn declaring its effort tier: it
+# emits ``declare_effort_tier`` *alongside* the first action of the chosen tier (or, for the
+# terminal direct/meta paths, a lone ``submit_final_report`` carrying ``tier=``). That means the
+# tier must be derived from a whole tool-call batch, deterministically, before any sibling call
+# executes — hence one resolver shared by every tier-aware middleware.
+#
+# See misc/adaptive-orchestrator-skip-tier-turn-plan.md (§2, §9) for the design and caveats.
+
+_PLANNER_SUBAGENT = "planner-agent"
+_SOURCE_ROUTER_SUBAGENT = "source-router-agent"
+_WRITER_SUBAGENT = "writer-agent"
+
+# Coarse "what is this call trying to do" labels. Tier inference and the compatibility matrix
+# both key on these rather than on raw tool names, so a config that renames or swaps a source
+# tool does not need a new rule.
+_KIND_FINALIZE_DIRECT = "finalize_direct"
+_KIND_FINALIZE_META = "finalize_meta"
+_KIND_FINALIZE_RESEARCHED = "finalize_researched"
+_KIND_SOURCE_TOOL = "source_tool"
+_KIND_SHALLOW_TASK = "shallow_task"
+_KIND_PLANNER_TASK = "planner_task"
+_KIND_WRITER_TASK = "writer_task"
+_KIND_RESEARCH_BATCH = "research_batch"
+_KIND_TODOS = "todos"
+
+# Kinds that constitute "real work". A batch containing none of these (only think / file reads /
+# get_verified_sources / a bare declaration) must never establish a tier by itself.
+_SUBSTANTIVE_KINDS = frozenset(
+    {
+        _KIND_FINALIZE_DIRECT,
+        _KIND_FINALIZE_META,
+        _KIND_FINALIZE_RESEARCHED,
+        _KIND_SOURCE_TOOL,
+        _KIND_SHALLOW_TASK,
+        _KIND_PLANNER_TASK,
+        _KIND_WRITER_TASK,
+        _KIND_RESEARCH_BATCH,
+    }
+)
+
+# The normal effort tiers, least to most effort. Mirrors tiers._TIER_ORDER; duplicated as a local
+# tuple so this module does not depend on a private name.
+_NORMAL_TIER_ORDER: tuple[str, ...] = ("direct", "single_shot", "standard", "deep")
+# Terminal, non-research pseudo-tier for chit-chat / capability answers. Never rank-compared.
+_META_TIER = "meta"
+
+
+@dataclass(frozen=True)
+class BatchTierDecision:
+    """The single, immutable tier decision for one assistant tool-call batch.
+
+    ``source`` records how the tier was established, which drives two behaviours: an
+    ``inferred`` tier is persisted by the resolver (no ``declare_effort_tier`` ran, so nothing
+    else would write ``/shared/effort_tier.json``), and it is logged at WARNING so evals can
+    report how often the model skipped its declaration. ``error`` being set means no sibling
+    substantive call in this batch may execute.
+    """
+
+    tier: str | None
+    source: str  # "declared" | "cached" | "inferred" | "unresolved"
+    error: str | None = None
+
+
+def _tool_call_name_args(tool_call: object) -> tuple[str | None, dict]:
+    """Return ``(name, args)`` from a tool call in either dict or attribute form."""
+    if isinstance(tool_call, dict):
+        name = tool_call.get("name")
+        args = tool_call.get("args")
+    else:
+        name = getattr(tool_call, "name", None)
+        args = getattr(tool_call, "args", None)
+    return name, args if isinstance(args, dict) else {}
+
+
+def _last_message(state: object):
+    """Return the last message of ``state``, or ``None`` for an unrecognised/empty state.
+
+    Only the last message is ever inspected. History is unreliable here: middleware earlier in
+    the stack (e.g. ``SummarizationMiddleware``) may have rewritten or dropped prior AIMessages
+    by the time this code runs.
+    """
+    messages = state.get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
+    if not messages:
+        return None
+    return list(messages)[-1]
+
+
+class TierResolver:
+    """Resolve the effort tier for a whole tool-call batch, once, for every middleware.
+
+    ``ToolNode`` dispatches all tool calls of one assistant turn together and their wrappers may
+    run in any order. A middleware that caches the tier from its own ``awrap_tool_call`` can
+    therefore observe a *stale* tier when ``declare_effort_tier`` happens to be scheduled after
+    its sibling. This resolver removes that ordering dependence: it reads every sibling call of
+    the current AIMessage, computes one ``BatchTierDecision``, and memoizes it by message
+    identity, so whichever wrapper asks first fixes the answer for all of them.
+
+    Resolution priority:
+
+    1. exactly one valid ``declare_effort_tier`` in the current batch;
+    2. the tier already accepted on an earlier turn;
+    3. inference from the complete current action batch (the fallback for models that will not
+       emit parallel tool calls).
+
+    Instances are per-request (built in ``build_adaptive_research_graph``), so mutable state on
+    ``self`` is concurrency-safe, and all mutation happens before the first ``await`` in the
+    calling middleware — the same atomicity rule the budget guards use.
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled_tiers: list[str] | None,
+        single_loop_single_shot: bool = False,
+        shallow_mode: bool = False,
+        direct_source_tool_names: frozenset[str] | set[str] = frozenset(),
+        backend: object | None = None,
+    ) -> None:
+        self._enabled: tuple[str, ...] = tuple(t for t in _NORMAL_TIER_ORDER if t in (enabled_tiers or ()))
+        if not self._enabled:
+            self._enabled = _NORMAL_TIER_ORDER
+        self._single_loop = single_loop_single_shot
+        self._shallow_mode = shallow_mode
+        self._source_tool_names = frozenset(direct_source_tool_names)
+        self._backend = backend
+        self._tier: str | None = None
+        self._decisions: dict[object, BatchTierDecision] = {}
+        self._persisted = False
+
+    # --- public surface ----------------------------------------------------------------------
+
+    @property
+    def tier(self) -> str | None:
+        """The tier accepted so far for this request, or ``None`` before the first batch."""
+        return self._tier
+
+    @property
+    def enabled_tiers(self) -> tuple[str, ...]:
+        return self._enabled
+
+    def decide(self, state: object) -> BatchTierDecision:
+        """Return the memoized decision for the batch currently being executed."""
+        message = _last_message(state)
+        tool_calls = getattr(message, "tool_calls", None) if message is not None else None
+        if not tool_calls:
+            # No batch to read (unusual shape, or a model call rather than a tool call): fall
+            # back to whatever has already been accepted rather than failing the run.
+            return BatchTierDecision(self._tier, "cached" if self._tier else "unresolved")
+        key = getattr(message, "id", None) or id(message)
+        cached = self._decisions.get(key)
+        if cached is not None:
+            return cached
+        decision = self._resolve(tool_calls)
+        self._decisions[key] = decision
+        return decision
+
+    def commit(self, decision: BatchTierDecision) -> None:
+        """Accept a decision. Idempotent, so every sibling wrapper may call it."""
+        if decision.error or decision.tier is None:
+            return
+        if decision.tier == self._tier:
+            return
+        self._tier = decision.tier
+        if decision.source == "inferred":
+            logger.warning(
+                "TierResolver: no declare_effort_tier in the batch — tier inferred as %s. "
+                "The model is not honouring the co-declaration contract.",
+                decision.tier,
+            )
+            self._persist(decision.tier)
+        else:
+            logger.debug("TierResolver: tier=%s (%s)", decision.tier, decision.source)
+
+    # --- internals ---------------------------------------------------------------------------
+
+    def _persist(self, tier: str) -> None:
+        """Write an inferred tier to ``/shared/effort_tier.json`` so ``run()`` can report it.
+
+        ``declare_effort_tier`` already persists explicitly declared tiers; only the inference
+        fallback would otherwise leave the file missing. Best-effort: a failed write must not
+        break a run that is otherwise proceeding correctly.
+        """
+        if self._backend is None:
+            return
+        try:
+            self._backend.upload_files([(EFFORT_TIER_PATH, json.dumps({"tier": tier}).encode("utf-8"))])
+            self._persisted = True
+        except Exception:  # pragma: no cover - observability only
+            logger.warning("TierResolver: could not persist inferred tier %s", tier, exc_info=True)
+
+    def _rank(self, tier: str | None) -> int:
+        return _NORMAL_TIER_ORDER.index(tier) if tier in _NORMAL_TIER_ORDER else -1
+
+    def _lowest_enabled(self, candidates: tuple[str, ...]) -> str | None:
+        for tier in _NORMAL_TIER_ORDER:
+            if tier in candidates and tier in self._enabled:
+                return tier
+        return None
+
+    def _highest_enabled(self, candidates: tuple[str, ...]) -> str | None:
+        for tier in reversed(_NORMAL_TIER_ORDER):
+            if tier in candidates and tier in self._enabled:
+                return tier
+        return None
+
+    def classify(self, name: str | None, args: dict) -> str | None:
+        """Map one tool call to an action kind, or ``None`` when it implies nothing about tier."""
+        if name is None:
+            return None
+        if name == _FINALIZE_TOOL:
+            if not args.get("researched", True):
+                return _KIND_FINALIZE_META if args.get("tier") == _META_TIER else _KIND_FINALIZE_DIRECT
+            return _KIND_FINALIZE_RESEARCHED
+        if name == _RUN_RESEARCH_BATCH_TOOL:
+            return _KIND_RESEARCH_BATCH
+        if name == _WRITE_TODOS_TOOL:
+            return _KIND_TODOS
+        if name == _TASK_TOOL:
+            subagent = args.get(_SUBAGENT_TYPE_ARG)
+            if subagent == SHALLOW_RESEARCHER_SUBAGENT:
+                return _KIND_SHALLOW_TASK
+            if subagent == _WRITER_SUBAGENT:
+                return _KIND_WRITER_TASK
+            if subagent in (_PLANNER_SUBAGENT, _SOURCE_ROUTER_SUBAGENT):
+                return _KIND_PLANNER_TASK
+            return _KIND_PLANNER_TASK
+        if name in self._source_tool_names:
+            return _KIND_SOURCE_TOOL
+        # think / file tools / get_verified_sources / declare_effort_tier: no tier implication.
+        return None
+
+    def _implied_tier(self, kind: str) -> tuple[str | None, str | None]:
+        """Return ``(tier, error)`` implied by one action kind under the current execution mode."""
+        if kind == _KIND_FINALIZE_META:
+            return _META_TIER, None
+        if kind == _KIND_FINALIZE_DIRECT:
+            if "direct" in self._enabled:
+                return "direct", None
+            return None, (
+                "The `direct` tier is not enabled in this configuration. Use the lowest enabled "
+                "research tier and verify the answer instead of answering from memory."
+            )
+        if kind == _KIND_SOURCE_TOOL:
+            if self._single_loop and "single_shot" in self._enabled:
+                return "single_shot", None
+            return None, (
+                "Source tools are not callable directly on this path. Delegate research through "
+                "`run_research_batch` instead."
+            )
+        if kind == _KIND_SHALLOW_TASK:
+            if self._shallow_mode and "single_shot" in self._enabled:
+                return "single_shot", None
+            return None, "The shallow-researcher subagent is not available in this configuration."
+        if kind == _KIND_RESEARCH_BATCH:
+            # Never infer `single_shot` while a tier with real request budgets is enabled:
+            # budgets_for_tier() returns None for single_shot, which makes the request-wide
+            # loop guard completely inert (no batch cap, no query cap, no turn cap). Guessing
+            # low here would remove every research bound in exactly the situation where the
+            # model is already misbehaving. See plan doc §9.1.
+            guarded = self._lowest_enabled(("standard", "deep"))
+            if guarded is not None:
+                return guarded, None
+            if self._single_loop or self._shallow_mode:
+                # A fast lane owns single_shot, and neither variant reaches research through
+                # run_research_batch — so with standard/deep disabled there is no tier that can
+                # legally perform this call.
+                return None, (
+                    "`run_research_batch` is not available in this configuration: the single_shot "
+                    + (
+                        "path delegates to the shallow-researcher subagent."
+                        if self._shallow_mode
+                        else "path calls source tools directly."
+                    )
+                )
+            if "single_shot" in self._enabled:
+                # Only reachable when single_shot is the sole research tier *and* it researches
+                # through run_research_batch, where the guard would have been inert regardless.
+                return "single_shot", None
+            return None, "No research-capable tier is enabled in this configuration."
+        if kind == _KIND_PLANNER_TASK:
+            # A planner / source-router hand-off means the planned writer pipeline is starting.
+            # Map it to the deepest enabled writer tier so the run gets the more generous
+            # budgets: truncating a genuine `deep` run mid-research is the worse failure.
+            ceiling = self._highest_enabled(("standard", "deep"))
+            if ceiling is not None:
+                return ceiling, None
+            return None, "Planning and delegation are not available under the enabled tiers."
+        if kind == _KIND_WRITER_TASK:
+            return None, (
+                "writer-agent cannot be the first action: it requires `/shared/plan.json` and the "
+                "planned research notes. Run the Planned Writer Pipeline in order."
+            )
+        # _KIND_TODOS and _KIND_FINALIZE_RESEARCHED imply nothing on their own.
+        return None, None
+
+    def _allowed(self, kind: str, tier: str) -> bool:
+        """Return True when ``kind`` is a legal action for an already-resolved ``tier``."""
+        if kind in (_KIND_FINALIZE_DIRECT, _KIND_FINALIZE_META, _KIND_FINALIZE_RESEARCHED):
+            # Finalizing is always structurally legal; the finalize protocol and the shallow
+            # delegation middleware police *what* may be finalized.
+            return True
+        if tier == _META_TIER:
+            return False
+        if tier == "direct":
+            return False
+        if tier == "single_shot":
+            if self._shallow_mode:
+                return kind == _KIND_SHALLOW_TASK
+            if self._single_loop:
+                return kind == _KIND_SOURCE_TOOL
+            return kind in (_KIND_RESEARCH_BATCH, _KIND_TODOS)
+        # standard / deep
+        if kind in (_KIND_SOURCE_TOOL, _KIND_SHALLOW_TASK):
+            return False
+        return kind in (_KIND_RESEARCH_BATCH, _KIND_PLANNER_TASK, _KIND_WRITER_TASK, _KIND_TODOS)
+
+    def _promotable(self, kind: str, tier: str) -> bool:
+        """Return True when a tier/action mismatch may be absorbed as an upward escalation.
+
+        Two mismatches are deliberately *not* promotable, because promoting would silently
+        convert the run into a different (more expensive) shape rather than making the model
+        correct itself:
+
+        - a fast-lane ``single_shot`` calling ``run_research_batch`` — the fast lane exists
+          precisely to avoid the delegated researcher loop;
+        - ``standard``/``deep`` reaching for a direct source tool or the shallow sub-agent —
+          those belong to the single-shot lane only.
+        """
+        if tier == "single_shot" and kind == _KIND_RESEARCH_BATCH and (self._single_loop or self._shallow_mode):
+            return False
+        if tier in ("standard", "deep") and kind in (_KIND_SOURCE_TOOL, _KIND_SHALLOW_TASK):
+            return False
+        return True
+
+    def _infer(self, kinds: list[str]) -> tuple[str | None, str | None]:
+        """Infer a tier from the complete batch of substantive action kinds."""
+        implied: list[str] = []
+        for kind in kinds:
+            tier, error = self._implied_tier(kind)
+            if error:
+                return None, error
+            if tier is not None:
+                implied.append(tier)
+        distinct = set(implied)
+        if not distinct:
+            return None, None
+        if len(distinct) == 1:
+            return implied[0], None
+        if distinct <= {"standard", "deep"}:
+            # e.g. write_todos + planner hand-off: same pipeline, take the deeper reading.
+            return self._highest_enabled(tuple(distinct)), None
+        return None, (
+            "These actions belong to different effort levels and cannot run in one turn. Take the "
+            "first step of a single effort level, and declare it with `declare_effort_tier`."
+        )
+
+    def _resolve(self, tool_calls: list) -> BatchTierDecision:
+        """Compute the decision for one batch: declaration, then cache, then inference."""
+        declared: set[str] = set()
+        kinds: list[str] = []
+        for call in tool_calls:
+            name, args = _tool_call_name_args(call)
+            if name == _DECLARE_EFFORT_TIER_TOOL:
+                tier = args.get("tier")
+                if isinstance(tier, str) and tier.strip():
+                    declared.add(tier.strip())
+                continue
+            kind = self.classify(name, args)
+            if kind is not None:
+                kinds.append(kind)
+
+        substantive = [k for k in kinds if k in _SUBSTANTIVE_KINDS]
+
+        if len(declared) > 1:
+            return BatchTierDecision(
+                None,
+                "unresolved",
+                "Conflicting effort tiers were declared in one turn. Declare exactly one tier.",
+            )
+
+        tier: str | None = None
+        source = "unresolved"
+        if declared:
+            tier = next(iter(declared))
+            error = self._validate_declaration(tier, substantive)
+            if error:
+                return BatchTierDecision(None, "unresolved", error)
+            source = "declared"
+        elif self._tier is not None:
+            tier, source = self._tier, "cached"
+        elif substantive:
+            tier, error = self._infer(kinds)
+            if error:
+                return BatchTierDecision(None, "unresolved", error)
+            source = "inferred" if tier is not None else "unresolved"
+
+        if tier is None:
+            if substantive:
+                return BatchTierDecision(
+                    None,
+                    "unresolved",
+                    "The effort tier for this request is not established. Call "
+                    "`declare_effort_tier(tier=...)` together with the first action of that tier.",
+                )
+            # Only helpers ran (think / file reads / a bare declaration): nothing to resolve yet.
+            return BatchTierDecision(None, "unresolved")
+
+        return self._check_actions(tier, source, kinds)
+
+    def _validate_declaration(self, tier: str, substantive: list[str]) -> str | None:
+        """Validate an explicit declaration against the enabled set and the run's history."""
+        if tier == _META_TIER:
+            if all(k in (_KIND_FINALIZE_META, _KIND_FINALIZE_DIRECT) for k in substantive) and substantive:
+                return None
+            return (
+                'tier="meta" is only valid on the No-Research Meta / Capability Path, which ends '
+                'immediately with `submit_final_report(..., researched=false, tier="meta")`.'
+            )
+        if tier not in _NORMAL_TIER_ORDER:
+            return f"Unknown effort tier {tier!r}. Choose one of the enabled levels: {', '.join(self._enabled)}."
+        if tier not in self._enabled:
+            return f"The {tier!r} tier is not enabled in this configuration. Choose one of: {', '.join(self._enabled)}."
+        if self._tier is not None and self._tier != _META_TIER and self._rank(tier) < self._rank(self._tier):
+            return (
+                f"Cannot downgrade from {self._tier!r} to {tier!r} mid-run. Continue on the current "
+                "level, or escalate to a higher enabled level."
+            )
+        return None
+
+    def _check_actions(self, tier: str, source: str, kinds: list[str]) -> BatchTierDecision:
+        """Verify every action in the batch against the resolved tier, promoting where allowed."""
+        resolved = tier
+        for kind in kinds:
+            if self._allowed(kind, resolved):
+                continue
+            if not self._promotable(kind, resolved):
+                return BatchTierDecision(None, "unresolved", self._incompatible_message(kind, resolved))
+            implied, error = self._implied_tier(kind)
+            if error:
+                return BatchTierDecision(None, "unresolved", error)
+            if implied is None or implied == _META_TIER or implied not in self._enabled:
+                return BatchTierDecision(None, "unresolved", self._incompatible_message(kind, resolved))
+            if self._rank(implied) <= self._rank(resolved):
+                return BatchTierDecision(None, "unresolved", self._incompatible_message(kind, resolved))
+            logger.info(
+                "TierResolver: promoting %s -> %s (action %s implies a higher level)",
+                resolved,
+                implied,
+                kind,
+            )
+            resolved = implied
+        return BatchTierDecision(resolved, source if resolved == tier else "inferred")
+
+    def _incompatible_message(self, kind: str, tier: str) -> str:
+        """Return the corrective text for an action that the resolved tier cannot perform."""
+        if kind == _KIND_RESEARCH_BATCH and tier == "single_shot":
+            if self._shallow_mode:
+                return (
+                    "`run_research_batch` is not available on the single_shot path. Delegate to the "
+                    "shallow-researcher subagent with `task`, or declare a higher tier first."
+                )
+            return (
+                "`run_research_batch` is not available on the single_shot path. Call the source "
+                "tools directly, or declare `standard`/`deep` before delegating research."
+            )
+        if kind == _KIND_SOURCE_TOOL:
+            return (
+                f"Source tools cannot be called directly on the {tier!r} path. Name them in each "
+                "`ResearchQuery.preferred_tools` and delegate through `run_research_batch`."
+            )
+        if kind == _KIND_SHALLOW_TASK:
+            return "shallow-researcher is available only on the single_shot tier; follow the declared tier's workflow."
+        return (
+            f"That action is not part of the {tier!r} workflow. Follow the procedure for the tier "
+            "you selected, or declare a higher enabled tier before using it."
+        )
+
+
 class ComplexityRouterMiddleware(AgentMiddleware):
     """Hide heavier tools from the orchestrator based on the enabled-tiers ceiling (Layer B).
 
@@ -184,21 +667,29 @@ class ComplexityRouterMiddleware(AgentMiddleware):
     - After any other tier is declared: hide source tools, keep ``run_research_batch`` — the
       two-loop architecture is preserved for ``standard`` / ``deep``.
 
-    The declared tier is captured via ``awrap_tool_call`` by intercepting the
-    ``declare_effort_tier`` execution rather than by scanning ``request.messages``. The
-    messages-scan approach is unreliable because framework middleware earlier in the stack
-    (e.g. SummarizationMiddleware) may have transformed or omitted prior AIMessages by the
-    time this middleware's ``awrap_model_call`` runs. Each middleware instance is created per
-    request (in ``build_adaptive_research_graph`` called from ``AdaptiveResearcherAgent.run``),
-    so caching the tier on ``self`` is safe with concurrent requests.
+    Without a ``tier_resolver`` (the legacy, declaration-first path) the tier is captured via
+    ``awrap_tool_call`` by intercepting the ``declare_effort_tier`` execution rather than by
+    scanning ``request.messages``. The messages-scan approach is unreliable because framework
+    middleware earlier in the stack (e.g. SummarizationMiddleware) may have transformed or
+    omitted prior AIMessages by the time this middleware's ``awrap_model_call`` runs. Each
+    middleware instance is created per request (in ``build_adaptive_research_graph`` called from
+    ``AdaptiveResearcherAgent.run``), so caching the tier on ``self`` is safe with concurrent
+    requests.
+
+    With a ``tier_resolver`` (catalog mode) the tier instead comes from the shared
+    ``TierResolver``, which resolves the *whole* tool batch at once. That is what lets the
+    orchestrator declare its tier and take that tier's first action in the same turn: whichever
+    wrapper runs first, every middleware sees the same decision. This middleware is also the
+    enforcement point for that decision — a batch the resolver rejects has each of its
+    substantive calls replaced by a corrective error result.
 
     When a ``prompt_renderer`` is supplied (``dynamic_orchestrator_sections=True``), the
-    middleware also performs a dynamic *prompt* swap: the graph is built with a minimal "router"
-    system prompt, and once a tier is declared this middleware replaces the system message on
+    middleware also performs a dynamic *prompt* swap: the graph is built with the turn-1 catalog
+    system prompt, and once a tier is resolved this middleware replaces the system message on
     every subsequent model call with ``prompt_renderer(tier)`` — the prompt trimmed to just that
     tier's sections. Renders are memoized per tier so the swapped prompt is byte-stable across a
-    run's model calls (KV-cache friendly) and each tier renders at most once. Re-declaring a
-    higher tier (escalation) simply renders and caches that tier's larger prompt.
+    run's model calls (KV-cache friendly) and each tier renders at most once. Escalating to a
+    higher tier simply renders and caches that tier's larger prompt.
 
     Finally, on the ``single_loop_single_shot`` ``single_shot`` path it enforces a **search
     budget**: it counts direct source-tool calls (in ``awrap_tool_call``) and, once
@@ -220,6 +711,7 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         single_shot_search_budget: int = _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET,
         prompt_renderer: Callable[[str], str] | None = None,
         shallow_subagent_capture: object | None = None,
+        tier_resolver: TierResolver | None = None,
     ) -> None:
         """Compute hidden tools, preserving the citation-safe delta writer path when needed."""
         # The shallow sub-agent is reached through `task`, so a shallow-only ceiling must not hide
@@ -247,41 +739,73 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         self._prompt_renderer = prompt_renderer
         # Memoize rendered prompts per tier: byte-stable across turns, and render each tier once.
         self._rendered_prompt_cache: dict[str, str] = {}
+        # Catalog mode (opt-in): the shared batch resolver replaces this middleware's own tier
+        # cache and gates the batch. None -> legacy declaration-first behavior, unchanged.
+        self._resolver = tier_resolver
+
+    @property
+    def _tier(self) -> str | None:
+        """The run's effort tier: from the shared resolver in catalog mode, else the local cache."""
+        if self._resolver is not None:
+            return self._resolver.tier
+        return self._declared_tier
 
     async def awrap_tool_call(self, request, handler):
-        """Cache the declared tier and enforce the single_shot search budget.
+        """Resolve the batch's tier, gate incompatible calls, and enforce the search budget.
 
-        Two responsibilities, both keyed on the tool name read from ``request.tool_call``:
+        Three responsibilities, in order:
 
-        1. When ``declare_effort_tier`` fires, cache the chosen tier for the tool-swap / prompt-
-           swap logic (unchanged behavior).
-        2. On the ``single_loop_single_shot`` ``single_shot`` path, count each direct source-tool
-           call. The search still executes; but once the count reaches ``_search_budget`` we
-           *append* a corrective nudge to the returned result so the model is told, in-context,
-           to stop searching and finalize. The hard guarantee (withdrawing the search tools) is
-           applied separately in ``_filter_tools`` on the next model call — this nudge only
-           explains why the tools vanished, and it preserves the retrieved evidence by appending
-           rather than overwriting.
+        1. **Tier.** In catalog mode the shared resolver decides the tier for the whole tool
+           batch; a batch it rejects has every substantive sibling blocked with the same
+           corrective message. Outside catalog mode the legacy behavior is kept: cache the tier
+           when ``declare_effort_tier`` fires.
+        2. **Search budget.** On the ``single_loop_single_shot`` ``single_shot`` path, reserve a
+           budget slot *before* awaiting the handler and refuse the call outright once the budget
+           is spent. Reserving up-front is what makes the cap hard for a batch of parallel
+           searches issued in one turn — counting afterwards would let the whole batch through.
+        3. **Nudge.** The search that spends the last slot gets a corrective note appended to its
+           result, so the model is told in-context why the search tools are about to vanish; the
+           tool withdrawal in ``_filter_tools`` remains the guarantee.
         """
         tool_call = getattr(request, "tool_call", None)
         name = None
         if tool_call is not None:
             name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", None)
-            if name == _DECLARE_EFFORT_TIER_TOOL:
-                args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", None)
-                if isinstance(args, dict) and args.get("tier"):
-                    self._declared_tier = args["tier"]
-                    logger.debug("ComplexityRouterMiddleware: declared tier = %s", self._declared_tier)
 
-        # Count this call up-front (before running it) only when it is a budgeted single_shot
-        # search, so the post-call threshold check and the next _filter_tools both see it.
+        if self._resolver is not None:
+            decision = self._resolver.decide(getattr(request, "state", None))
+            if decision.error and self._is_substantive(name, tool_call):
+                logger.info("ComplexityRouterMiddleware: blocked %s — %s", name, decision.error)
+                return self._blocked(tool_call, decision.error)
+            self._resolver.commit(decision)
+        elif name == _DECLARE_EFFORT_TIER_TOOL:
+            args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", None)
+            if isinstance(args, dict) and args.get("tier"):
+                self._declared_tier = args["tier"]
+                logger.debug("ComplexityRouterMiddleware: declared tier = %s", self._declared_tier)
+
+        # Reserve the budget slot before running the call (and before any await) so parallel
+        # searches in one turn share one hard ceiling.
         is_budgeted_search = (
             self._single_loop_single_shot
-            and self._declared_tier == "single_shot"
+            and self._tier == "single_shot"
             and name is not None
             and name in self._direct_source_tool_names
         )
         if is_budgeted_search:
+            if self._source_call_count >= self._search_budget:
+                logger.info(
+                    "ComplexityRouterMiddleware: refused source call beyond the single_shot search budget (%d/%d)",
+                    self._source_call_count,
+                    self._search_budget,
+                )
+                return self._blocked(
+                    tool_call,
+                    "single_shot search budget exhausted: no further searches will run. Call "
+                    "`get_verified_sources`, then finalize with "
+                    '`submit_final_report(markdown, researched=true, tier="single_shot")`, '
+                    "noting any evidence gaps.",
+                )
             self._source_call_count += 1
 
         result = await handler(request)
@@ -303,9 +827,37 @@ class ComplexityRouterMiddleware(AgentMiddleware):
                 pass
         return result
 
+    def _is_substantive(self, name: str | None, tool_call: object) -> bool:
+        """Return True when this call does real work (and so must not run on a rejected batch).
+
+        Helpers (``think``, file reads, ``get_verified_sources``) and the declaration itself are
+        allowed through on a rejected batch: blocking them adds noise without preventing the
+        thing we care about, which is research or delegation running under an invalid tier.
+        """
+        if self._resolver is None or name is None:
+            return False
+        _, args = _tool_call_name_args(tool_call)
+        return self._resolver.classify(name, args) in _SUBSTANTIVE_KINDS
+
+    @staticmethod
+    def _blocked(tool_call: object, message: str) -> ToolMessage:
+        """Return a corrective error result, keeping the rejected call inside the agent loop."""
+        call = tool_call if isinstance(tool_call, dict) else {}
+        return ToolMessage(
+            content=message,
+            tool_call_id=call.get("id", "complexity-router"),
+            name=call.get("name", "tool"),
+            status="error",
+        )
+
     def _filter_tools(self, tools: list[object]) -> list[object]:
         """Return the tool list filtered by ceiling rules and the single-shot swap when active."""
-        if self._shallow_capture is not None and self._declared_tier == "single_shot":
+        if self._resolver is not None and self._tier is None:
+            # Catalog turn 1: the tier is not known yet, so expose the union of the paths the
+            # model may legitimately take (ceiling hiding still applies). The compatibility
+            # matrix in TierResolver — not tool hiding — is what keeps the model on one path.
+            return [t for t in tools if _request_tool_name(t) not in self._hidden_tool_names]
+        if self._shallow_capture is not None and self._tier == "single_shot":
             # single_shot is delegated wholesale to the shallow researcher: hide
             # run_research_batch and every direct source tool (retrieval belongs to the
             # sub-agent), and hide `task` on later model turns once execution has started or
@@ -316,7 +868,7 @@ class ComplexityRouterMiddleware(AgentMiddleware):
                 hidden.add(_TASK_TOOL)
             return [t for t in tools if _request_tool_name(t) not in hidden]
         if self._single_loop_single_shot and self._direct_source_tool_names:
-            if self._declared_tier == "single_shot":
+            if self._tier == "single_shot":
                 if self._source_call_count >= self._search_budget:
                     # Budget spent: also withdraw the source tools so the model *cannot* search
                     # again. Only get_verified_sources + submit_final_report (and the other
@@ -339,14 +891,14 @@ class ComplexityRouterMiddleware(AgentMiddleware):
         """Build the ``request.override(...)`` kwargs applied before each model call.
 
         Always filters tools (ceiling hiding + single-shot swap). Additionally, when a prompt
-        renderer is configured and a tier has been declared, swaps the system message to that
+        renderer is configured and a tier has been resolved, swaps the system message to that
         tier's trimmed prompt — mirroring ``TodoSuppressionMiddleware._clean_request`` in
-        deep_researcher (one overrides dict, a freshly built ``SystemMessage``). Before a tier is
-        declared (turn 1) ``_declared_tier`` is None, so the baked-in router prompt is left intact.
+        deep_researcher (one overrides dict, a freshly built ``SystemMessage``). Before the tier
+        is resolved (catalog turn 1) it is None, so the baked-in catalog prompt is left intact.
         """
         overrides: dict[str, object] = {"tools": self._filter_tools(request.tools)}
-        if self._prompt_renderer is not None and self._declared_tier is not None:
-            tier = self._declared_tier
+        tier = self._tier
+        if self._prompt_renderer is not None and tier is not None:
             if tier not in self._rendered_prompt_cache:
                 self._rendered_prompt_cache[tier] = self._prompt_renderer(tier)
             overrides["system_message"] = SystemMessage(content=self._rendered_prompt_cache[tier])
@@ -389,11 +941,14 @@ class SingleShotShallowDelegationMiddleware(AgentMiddleware):
     request, built in ``build_adaptive_research_graph``, so request-scoped state lives on ``self``.
     """
 
-    def __init__(self, *, capture: object, original_query: str) -> None:
-        """Store the run-scoped capture and the authoritative user query."""
+    def __init__(self, *, capture: object, original_query: str, tier_resolver: TierResolver | None = None) -> None:
+        """Store the run-scoped capture, the authoritative user query, and the shared resolver."""
         self._capture = capture
         self._original_query = original_query
         self._declared_tier: str | None = None
+        # Catalog mode: defer to the one batch-wide decision instead of this middleware's own
+        # same-turn scan, so a tier co-declared with `task` is seen identically everywhere.
+        self._resolver = tier_resolver
 
     @staticmethod
     def _tool_call_of(request) -> dict:
@@ -401,20 +956,30 @@ class SingleShotShallowDelegationMiddleware(AgentMiddleware):
         tool_call = getattr(request, "tool_call", None)
         return tool_call if isinstance(tool_call, dict) else {}
 
-    def _effective_tier(self, request) -> tuple[str | None, bool]:
-        """Return ``(tier, conflicting)`` from the current tool-call batch, else the cached tier.
+    def _effective_tier(self, request) -> tuple[str | None, str | None]:
+        """Return ``(tier, error)`` from the current tool-call batch, else the cached tier.
 
         Scanning full message history remains unreliable (upstream middleware may rewrite it), but
         the state ToolNode is executing does contain the AIMessage whose sibling tool calls are in
         flight — so a same-turn ``declare_effort_tier`` is visible here no matter which wrapper
         runs first.
+
+        In catalog mode the shared resolver has already made that determination for the whole
+        batch (including the inference fallback and the enabled/downgrade validation), so this
+        defers to it rather than re-deriving a second, possibly different answer.
         """
+        if self._resolver is not None:
+            decision = self._resolver.decide(getattr(request, "state", None))
+            return (None, decision.error) if decision.error else (decision.tier, None)
         declared_here = _declared_tiers_in_current_tool_batch(getattr(request, "state", None))
         if len(declared_here) > 1:
-            return None, True
+            return None, (
+                "Conflicting effort tiers were declared in one turn. Declare exactly one tier "
+                "before delegating or finalizing."
+            )
         if declared_here:
-            return next(iter(declared_here)), False
-        return self._declared_tier, False
+            return next(iter(declared_here)), None
+        return self._declared_tier, None
 
     def _blocked(self, request, message: str) -> ToolMessage:
         """Return a corrective error result without executing the tool.
@@ -438,14 +1003,17 @@ class SingleShotShallowDelegationMiddleware(AgentMiddleware):
         name = tool_call.get("name")
         args = dict(tool_call.get("args") or {})
 
-        effective_tier, conflicting_declarations = self._effective_tier(request)
-        if conflicting_declarations and name in (_TASK_TOOL, _FINALIZE_TOOL):
-            logger.warning("single_shot shallow delegation: conflicting tier declarations in one turn")
-            return self._blocked(
-                request,
-                "Conflicting effort tiers were declared in one turn. Declare exactly one tier "
-                "before delegating or finalizing.",
-            )
+        effective_tier, tier_error = self._effective_tier(request)
+        if tier_error and name in (_TASK_TOOL, _FINALIZE_TOOL):
+            logger.warning("single_shot shallow delegation: unusable tier decision — %s", tier_error)
+            return self._blocked(request, tier_error)
+
+        # Mirror the resolved tier onto the capture. AdaptiveResearcherAgent.run checks it before
+        # reusing a captured shallow report after a timeout, and in catalog mode the tier may have
+        # been inferred rather than declared — in which case the declaration branch below never
+        # runs and the capture would otherwise keep a stale tier.
+        if effective_tier is not None and self._capture.declared_tier != effective_tier:
+            self._capture.declared_tier = effective_tier
 
         if name == _DECLARE_EFFORT_TIER_TOOL:
             tier = args.get("tier")
@@ -782,11 +1350,19 @@ class OrchestratorLoopGuardMiddleware(AgentMiddleware):
     query arguments.
     """
 
-    def __init__(self, *, config: AdaptiveRequestTerminationConfig) -> None:
+    def __init__(
+        self,
+        *,
+        config: AdaptiveRequestTerminationConfig,
+        tier_resolver: TierResolver | None = None,
+    ) -> None:
         self._config = config
         # Short opaque per-request tag for correlating log lines without leaking content.
         self._request_tag = uuid4().hex[:12]
-        self._declared_tier: str | None = None
+        self._own_declared_tier: str | None = None
+        # Catalog mode: read the tier from the shared batch decision so a declaration scheduled
+        # after its sibling `run_research_batch` cannot leave the first batch unbudgeted.
+        self._resolver = tier_resolver
         self._phase: str = "active"
         self._exhaustion_reason: str | None = None
         self._batch_call_count = 0
@@ -795,6 +1371,18 @@ class OrchestratorLoopGuardMiddleware(AgentMiddleware):
         self._query_signature_counts: dict[str, int] = {}
 
     # --- introspection helpers (used by the fallback and by tests) ---------------------------
+
+    @property
+    def _declared_tier(self) -> str | None:
+        """The tier this guard budgets against: the shared resolver's, else its own capture."""
+        if self._resolver is not None:
+            return self._resolver.tier
+        return self._own_declared_tier
+
+    @_declared_tier.setter
+    def _declared_tier(self, tier: str | None) -> None:
+        """Set the locally-cached tier. Ignored in catalog mode, where the resolver is the source."""
+        self._own_declared_tier = tier
 
     @property
     def phase(self) -> str:
@@ -882,17 +1470,26 @@ class OrchestratorLoopGuardMiddleware(AgentMiddleware):
         name = tool_call.get("name")
         if name == _DECLARE_EFFORT_TIER_TOOL:
             args = tool_call.get("args")
-            if isinstance(args, dict) and args.get("tier"):
-                self._declared_tier = args["tier"]
+            if isinstance(args, dict) and args.get("tier") and self._resolver is None:
+                self._own_declared_tier = args["tier"]
                 logger.debug(
                     "OrchestratorLoopGuardMiddleware: request=%s declared tier=%s",
                     self._request_tag,
-                    self._declared_tier,
+                    self._own_declared_tier,
                 )
             return await handler(request)
 
         if name != _RUN_RESEARCH_BATCH_TOOL:
             return await handler(request)
+
+        if self._resolver is not None:
+            decision = self._resolver.decide(getattr(request, "state", None))
+            if decision.error:
+                # The batch is invalid and ComplexityRouterMiddleware (inner) will reject this
+                # call. Pass through without reserving budget so a rejected batch does not
+                # consume the request's research allowance.
+                return await handler(request)
+            self._resolver.commit(decision)
 
         budgets = self._config.budgets_for_tier(self._declared_tier)
         if budgets is None:
