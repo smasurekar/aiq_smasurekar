@@ -49,14 +49,48 @@ FINAL_REPORT_META_PATH = "/shared/final_report_meta.json"
 EFFORT_TIER_PATH = "/shared/effort_tier.json"
 
 
-def build_declare_effort_tier_tool(*, backend: Any | None = None) -> BaseTool:
+# The tool description is prompt surface, so it has to state the contract of the mode the graph
+# was actually built in. Catalog mode wants the declaration emitted *with* the first action;
+# the legacy path wants it emitted first, alone.
+_DECLARE_TIER_DESCRIPTION_CATALOG = """Record the selected effort tier for this run.
+
+Call this in the SAME turn as the first action of the tier you chose — not in a turn of its
+own. For example, emit `declare_effort_tier(tier="standard")` and `run_research_batch(...)`
+together. Do not stall a turn just to declare.
+
+Do NOT call this on the `direct` or meta paths: those end immediately with a lone
+`submit_final_report(..., researched=false, tier="direct"|"meta")`, and adding a second tool
+call to that turn would prevent the run from terminating on the spot.
+
+This is a backend observability signal — do not mention it to the user.
+
+Args:
+    tier: The effort tier you chose for this run. Must be one of the enabled tier names
+        (e.g. "single_shot", "standard", "deep")."""
+
+_DECLARE_TIER_DESCRIPTION_LEGACY = """Record the selected effort tier at the start of the run.
+
+Call this as your very first tool call, immediately after deciding the effort level and before
+any research, planning, or delegation. This is a backend observability signal — do not mention
+it to the user.
+
+Args:
+    tier: The effort tier you chose for this run. Must be one of the enabled tier names
+        (e.g. "direct", "single_shot", "standard", "deep", "meta")."""
+
+
+def build_declare_effort_tier_tool(*, backend: Any | None = None, catalog_mode: bool = False) -> BaseTool:
     """Build the ``declare_effort_tier`` observability tool.
 
-    The orchestrator calls this as its very first tool call after deciding the effort
-    level. The tool logs the tier immediately (before any research or delegation) and
-    persists ``/shared/effort_tier.json`` via the shared backend so ``run()`` can read
-    the tier even on the deep / writer-agent path (which never calls
-    ``submit_final_report``).
+    The tool logs the tier immediately (before any research or delegation) and persists
+    ``/shared/effort_tier.json`` via the shared backend so ``run()`` can read the tier even on
+    the deep / writer-agent path (which never calls ``submit_final_report``).
+
+    ``catalog_mode`` selects only the *description* the model sees — behaviour is identical
+    either way. In catalog mode the orchestrator co-emits this call with the first action of the
+    chosen tier instead of spending a turn on it; on the terminal ``direct`` / meta paths it is
+    not called at all, because a second tool call in that turn would defeat the finalizer's
+    ``return_direct`` fast exit and cost the very model call catalog mode saves.
     """
 
     @tool
@@ -83,6 +117,9 @@ def build_declare_effort_tier_tool(*, backend: Any | None = None) -> BaseTool:
         logger.info("Effort tier selected  : %s", tier)
         return "Tier recorded."
 
+    declare_effort_tier.description = (
+        _DECLARE_TIER_DESCRIPTION_CATALOG if catalog_mode else _DECLARE_TIER_DESCRIPTION_LEGACY
+    )
     return declare_effort_tier
 
 

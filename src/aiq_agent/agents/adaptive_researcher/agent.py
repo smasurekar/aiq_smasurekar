@@ -144,8 +144,10 @@ class AdaptiveResearcherAgent:
                 single_loop_single_shot.
             shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-agent.
             shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-agent.
-            dynamic_orchestrator_sections: Render the orchestrator prompt trimmed per declared tier
-                (minimal router prompt on turn 1, per-tier prompt swapped in after declare_effort_tier).
+            dynamic_orchestrator_sections: Catalog mode — turn 1 renders the union of the enabled
+                tiers' sections so the orchestrator selects a tier and acts in one turn (no
+                dedicated tier-selection LLM call); the resolved tier's trimmed prompt is swapped
+                in from turn 2.
                 Off by default renders the full prompt once at build time, exactly as before.
             researcher_loop_guard: Hard per-researcher source-call, repeated-call, and consecutive-think
                 limits. Defaults to enabled budgets aligned with the researcher prompt.

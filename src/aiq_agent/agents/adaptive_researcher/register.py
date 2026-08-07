@@ -136,13 +136,17 @@ class AdaptiveResearchAgentConfig(FunctionBaseConfig, name="adaptive_research_ag
     dynamic_orchestrator_sections: bool = Field(
         default=False,
         description=(
-            "Token optimization: trim the orchestrator prompt to only the sections a tier needs. "
-            "When on, turn 1 uses a minimal 'router' prompt (tier selection only); once the model "
-            "calls declare_effort_tier, ComplexityRouterMiddleware swaps in the per-tier trimmed "
-            "prompt for the rest of the run, so cheap direct/single_shot runs stop paying for the "
-            "deep/writer/delta machinery. Off by default: with it off the full prompt is rendered "
-            "once at build time exactly as before. Parent-report delta rewrites always use the full "
-            "delta prompt and are never routed."
+            "Catalog mode: trim the orchestrator prompt to only the sections a tier needs, without "
+            "spending an LLM call on tier selection. When on, turn 1 uses the 'catalog' prompt — "
+            "the union of the enabled tiers' sections — so the orchestrator declares its tier and "
+            "takes that tier's first action in the SAME turn; from turn 2 "
+            "ComplexityRouterMiddleware swaps in the per-tier trimmed prompt, so cheap "
+            "direct/single_shot runs stop paying for the deep/writer/delta machinery. The terminal "
+            "direct/meta paths skip the declaration entirely and finish with a lone "
+            "submit_final_report so its return_direct fast exit is preserved. Off by default: with "
+            "it off the full prompt is rendered once at build time and the declaration-first "
+            "contract is unchanged. Parent-report delta rewrites always use the full delta prompt "
+            "and are never routed."
         ),
     )
     single_shot_search_budget: int = Field(

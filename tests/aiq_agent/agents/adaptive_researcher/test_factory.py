@@ -28,6 +28,7 @@ from aiq_agent.agents.adaptive_researcher.agent import AGENT_DIR
 from aiq_agent.agents.adaptive_researcher.agent import AdaptiveResearcherAgent
 from aiq_agent.agents.adaptive_researcher.models import AdaptiveResearchAgentState
 from aiq_agent.agents.adaptive_researcher.tiers import enabled_tier_profiles
+from aiq_agent.agents.adaptive_researcher.tiers import sections_for_catalog
 from aiq_agent.agents.adaptive_researcher.tiers import sections_for_tier
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
@@ -165,13 +166,21 @@ class TestOrchestratorPromptRendering:
         return render_prompt_template(tmpl, **base)
 
     def _render_mode(self, mode, *, enabled=("direct", "single_shot", "standard", "deep")):
-        """Render the prompt for one dynamic-sections mode ("router", a tier, or "delta").
+        """Render the prompt for one dynamic-sections mode ("catalog", a tier, or "delta").
 
-        Mirrors what factory._render_orchestrator does: collapse enabled_tiers to the mode (for
-        the ## Workflow blocks) and pass the mode's section on/off map.
+        Mirrors what factory._render_orchestrator does: "catalog" and "delta" keep the full
+        enabled set (catalog must describe every tier the model may pick), a tier name collapses
+        enabled_tiers to itself, and each mode passes its own section on/off map.
         """
         enabled = list(enabled)
-        tiers_for_mode = enabled if mode in ("router", "delta") else [mode]
+        if mode == "catalog":
+            return self._render(
+                enabled_tiers=enabled,
+                tier_profiles=enabled_tier_profiles(enabled),
+                catalog_mode=True,
+                sections=sections_for_catalog(enabled),
+            )
+        tiers_for_mode = enabled if mode == "delta" else [mode]
         return self._render(
             enabled_tiers=tiers_for_mode,
             tier_profiles=enabled_tier_profiles(tiers_for_mode),
@@ -320,15 +329,34 @@ class TestDynamicSectionRendering:
     def _prefix(self, mode):
         return self._h._render_mode(mode).split(ORCHESTRATOR_ANCHOR)[0]
 
-    def test_router_teaches_selection_only(self):
-        prefix = self._prefix("router")
+    def test_catalog_teaches_selection_and_every_enabled_workflow(self):
+        prefix = self._prefix("catalog")
         # keeps the tier-selection machinery ...
         assert "## Effort Levels" in prefix
         assert "## Choosing Effort" in prefix
-        # ... and drops the execution machinery (swapped in after declare_effort_tier)
-        assert "## Workflow" not in prefix
-        assert "## Research Loop" not in prefix
+        # ... and, unlike the old router prompt, also carries the execution machinery so the
+        # model can act in the same turn it selects.
+        assert "## Workflow" in prefix
+        assert "## Research Loop" in prefix
+        for tier in ("direct", "single_shot", "standard", "deep"):
+            assert f"### `{tier}`" in prefix, tier
+
+    def test_catalog_states_the_co_declaration_contract(self):
+        prefix = self._prefix("catalog")
+        assert "Decide and act in the same turn" in prefix
+        assert "First action by level" in prefix
+        # the terminal paths must be told NOT to declare, or return_direct is defeated
+        assert "do **not** call `declare_effort_tier`" in prefix
+
+    def test_catalog_drops_delta_machinery(self):
+        # A parent-report request never renders a catalog: it gets the forced delta prompt.
+        assert "## Delta / Parent-Report Rule" not in self._prefix("catalog")
+
+    def test_shallow_only_catalog_omits_writer_pipeline(self):
+        prefix = self._h._render_mode("catalog", enabled=("direct", "single_shot")).split(ORCHESTRATOR_ANCHOR)[0]
+        assert "### Planned Writer Pipeline" not in prefix
         assert "## Available Subagents" not in prefix
+        assert "### `deep`" not in prefix
 
     def test_direct_is_minimal(self):
         prefix = self._prefix("direct")
@@ -374,11 +402,12 @@ class TestDynamicSectionRendering:
         top_tier = self._h._render_mode("single_shot", enabled=("single_shot",)).split(ORCHESTRATOR_ANCHOR)[0]
         assert "## In-loop Escalation" not in top_tier
 
-    def test_every_mode_is_smaller_than_the_full_prompt(self):
-        # The full prompt is what every model call pays today; each trimmed mode must be smaller.
-        full = len(self._h._render())
-        for mode in ("router", "direct", "single_shot", "standard", "deep", "delta"):
-            assert len(self._h._render_mode(mode)) < full, mode
+    def test_per_tier_modes_are_smaller_than_the_catalog(self):
+        # Catalog is the turn-1 cost; every swapped-in per-tier prompt must be cheaper, which is
+        # what preserves the token savings from turn 2 onward.
+        catalog = len(self._h._render_mode("catalog"))
+        for mode in ("direct", "single_shot", "standard", "deep"):
+            assert len(self._h._render_mode(mode)) < catalog, mode
 
 
 class TestDynamicSectionWiring:
@@ -391,8 +420,19 @@ class TestDynamicSectionWiring:
         router = next((m for m in kwargs["middleware"] if m.__class__.__name__ == "ComplexityRouterMiddleware"), None)
         assert router is not None
         assert router._prompt_renderer is not None
-        # build-time prompt is the minimal router prompt (no execution machinery yet)
-        assert "## Research Loop" not in kwargs["system_prompt"].split(ORCHESTRATOR_ANCHOR)[0]
+        # build-time prompt is the catalog: selection AND every enabled tier's procedure, so the
+        # first turn can act rather than only route.
+        prefix = kwargs["system_prompt"].split(ORCHESTRATOR_ANCHOR)[0]
+        assert "## Choosing Effort" in prefix and "## Research Loop" in prefix
+        assert "Decide and act in the same turn" in prefix
+
+    def test_flag_on_shares_one_resolver_across_tier_aware_middleware(self, mock_llm_provider):
+        # All tier-aware middleware must consult the SAME resolver: two resolvers could disagree
+        # about a batch, which is the ordering bug catalog mode exists to remove.
+        kwargs = _build_and_capture(mock_llm_provider, dynamic_orchestrator_sections=True)
+        resolvers = [m._resolver for m in kwargs["middleware"] if getattr(m, "_resolver", None) is not None]
+        assert resolvers, "no middleware received a TierResolver"
+        assert all(r is resolvers[0] for r in resolvers)
 
     def test_flag_off_renders_full_prompt_and_no_router_middleware(self, mock_llm_provider):
         kwargs = _build_and_capture(mock_llm_provider, dynamic_orchestrator_sections=False)
@@ -400,6 +440,13 @@ class TestDynamicSectionWiring:
         assert "ComplexityRouterMiddleware" not in names
         prefix = kwargs["system_prompt"].split(ORCHESTRATOR_ANCHOR)[0]
         assert "## Research Loop" in prefix and "## Available Subagents" in prefix
+        # flag-off keeps the declaration-first contract verbatim
+        assert "as your very first tool call" in prefix
+        assert "Decide and act in the same turn" not in prefix
+
+    def test_flag_off_builds_no_resolver(self, mock_llm_provider):
+        kwargs = _build_and_capture(mock_llm_provider, dynamic_orchestrator_sections=False)
+        assert all(getattr(m, "_resolver", None) is None for m in kwargs["middleware"])
 
     def test_delta_run_uses_full_delta_prompt_without_swapping(self, mock_llm_provider):
         state = AdaptiveResearchAgentState(
@@ -408,7 +455,7 @@ class TestDynamicSectionWiring:
         )
         kwargs = _build_and_capture(mock_llm_provider, state=state, dynamic_orchestrator_sections=True)
         prefix = kwargs["system_prompt"].split(ORCHESTRATOR_ANCHOR)[0]
-        # delta prompt carries the full pipeline, not the router prompt
+        # delta prompt carries the full pipeline, not a catalog
         assert "### Planned Writer Pipeline" in prefix
         assert "## Delta / Parent-Report Rule" in prefix
         # no renderer-driven swap on a delta run
