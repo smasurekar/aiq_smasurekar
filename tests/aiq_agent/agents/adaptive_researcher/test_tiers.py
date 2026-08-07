@@ -15,6 +15,8 @@
 
 """Tests for the adaptive researcher effort tiers and the enabled_tiers config field."""
 
+import itertools
+
 import pytest
 from pydantic import ValidationError
 
@@ -27,6 +29,7 @@ from aiq_agent.agents.adaptive_researcher.tiers import clamp_to_enabled_tiers
 from aiq_agent.agents.adaptive_researcher.tiers import enabled_tier_profiles
 from aiq_agent.agents.adaptive_researcher.tiers import escalation_possible
 from aiq_agent.agents.adaptive_researcher.tiers import normalize_enabled_tiers
+from aiq_agent.agents.adaptive_researcher.tiers import sections_for_catalog
 from aiq_agent.agents.adaptive_researcher.tiers import sections_for_tier
 from aiq_agent.agents.adaptive_researcher.tiers import tier_ceiling
 
@@ -124,7 +127,7 @@ class TestEnabledTiersConfig:
 class TestSectionPresets:
     """Dynamic per-tier prompt sections: SECTION_PRESETS + sections_for_tier()."""
 
-    ALL_MODES = ("router", "direct", "single_shot", "standard", "deep", "delta")
+    ALL_MODES = ("direct", "single_shot", "standard", "deep", "delta")
 
     def test_every_mode_expands_to_full_flag_set(self):
         # sections_for_tier must return every flag (in SECTION_FLAGS), so rendering is
@@ -139,10 +142,12 @@ class TestSectionPresets:
         for mode, on_flags in SECTION_PRESETS.items():
             assert on_flags <= set(SECTION_FLAGS), mode
 
-    def test_router_selects_but_does_not_execute(self):
-        r = sections_for_tier("router", enabled=["direct", "single_shot", "standard", "deep"])
-        assert r["effort_catalog"] and r["effort_selection"]
-        assert not r["workflow"] and not r["research_loop"] and not r["subagents"]
+    def test_router_preset_is_gone(self):
+        # Catalog mode replaced the two-turn router flow outright; a leftover preset would be a
+        # silently reachable path with no code building it.
+        assert "router" not in SECTION_PRESETS
+        with pytest.raises(KeyError):
+            sections_for_tier("router", enabled=["direct", "deep"])
 
     def test_cheap_tiers_drop_selection_and_subagents(self):
         for mode in ("direct", "single_shot"):
@@ -164,6 +169,73 @@ class TestSectionPresets:
         assert not sections_for_tier("single_shot", enabled=["single_shot"])["escalation"]
         # deep never advertises escalation regardless of enabled set
         assert not sections_for_tier("deep", enabled=["deep"])["escalation"]
+
+
+class TestSectionsForCatalog:
+    """The turn-1 catalog map: union of the enabled tiers, derived (not a stored preset)."""
+
+    ALL = ["direct", "single_shot", "standard", "deep"]
+
+    @staticmethod
+    def _subsets():
+        for n in range(1, 5):
+            for combo in itertools.combinations(TestSectionsForCatalog.ALL, n):
+                yield list(combo)
+
+    def test_every_subset_expands_to_the_full_ordered_flag_set(self):
+        # Byte-stable rendering requires a fully populated map in SECTION_FLAGS order: a missing
+        # flag would render as "default on" and silently change the prompt.
+        for enabled in self._subsets():
+            resolved = sections_for_catalog(enabled)
+            assert list(resolved) == list(SECTION_FLAGS), enabled
+            assert all(isinstance(v, bool) for v in resolved.values())
+
+    def test_catalog_is_the_union_of_the_enabled_tiers(self):
+        for enabled in self._subsets():
+            resolved = sections_for_catalog(enabled)
+            for tier in enabled:
+                for flag in SECTION_PRESETS[tier]:
+                    # delta_rule and escalation are resolved against the enabled set rather than
+                    # unioned: delta is never catalog-routed, and escalation is meaningless when
+                    # only one tier is enabled. Both have dedicated tests below.
+                    if flag in ("delta_rule", "escalation"):
+                        continue
+                    assert resolved[flag], (enabled, tier, flag)
+
+    def test_selection_blocks_always_on(self):
+        # The model is choosing a tier on turn 1, so it needs the level descriptions and the
+        # selection contract even for a single-tier config.
+        for enabled in self._subsets():
+            resolved = sections_for_catalog(enabled)
+            assert resolved["effort_catalog"] and resolved["effort_selection"], enabled
+
+    def test_delta_rule_never_in_a_normal_catalog(self):
+        # Parent-report requests are detected at build time and get the forced delta prompt, so
+        # a normal catalog must never carry the delta machinery.
+        for enabled in self._subsets():
+            assert sections_for_catalog(enabled)["delta_rule"] is False, enabled
+
+    def test_escalation_only_with_more_than_one_tier(self):
+        assert sections_for_catalog(["single_shot", "deep"])["escalation"] is True
+        assert sections_for_catalog(["single_shot"])["escalation"] is False
+        assert sections_for_catalog(["deep"])["escalation"] is False
+
+    def test_shallow_only_catalog_omits_writer_machinery(self):
+        # The whole point of deriving the catalog: a config that can never reach the planned
+        # writer pipeline must not pay for its prompt sections.
+        shallow = sections_for_catalog(["direct", "single_shot"])
+        assert not shallow["subagents"]
+        assert not shallow["sequential_handoffs"]
+        assert not shallow["filesystem"]
+
+    def test_empty_falls_back_to_all_tiers(self):
+        assert sections_for_catalog([]) == sections_for_catalog(self.ALL)
+        assert sections_for_catalog(None) == sections_for_catalog(self.ALL)
+
+    def test_deterministic_for_a_given_enabled_set(self):
+        # Prompt KV-cache stability: two calls must produce an identical map, and enabled-tier
+        # ordering must not matter.
+        assert sections_for_catalog(["deep", "direct"]) == sections_for_catalog(["direct", "deep"])
 
 
 class TestEscalationPossible:

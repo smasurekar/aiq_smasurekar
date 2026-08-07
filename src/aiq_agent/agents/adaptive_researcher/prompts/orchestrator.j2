@@ -8,11 +8,14 @@
   compatible — this is what the flag-off path and the writer-path tiers use).
 
   The section flags and the per-tier presets are defined in code, in
-  `tiers.py` (`SECTION_FLAGS`, `SECTION_PRESETS`, `sections_for_tier`). Rendering
-  is driven from `factory.py`; when `dynamic_orchestrator_sections` is enabled the
-  orchestrator starts on a minimal "router" prompt and `ComplexityRouterMiddleware`
-  swaps in the declared tier's trimmed prompt for the rest of the run. See
-  misc/adaptive_orchestrator_dynamic_sections_plan.md for the design.
+  `tiers.py` (`SECTION_FLAGS`, `SECTION_PRESETS`, `sections_for_tier`,
+  `sections_for_catalog`). Rendering is driven from `factory.py`; when
+  `dynamic_orchestrator_sections` is enabled the orchestrator starts on the
+  "catalog" prompt (the union of every enabled tier's sections, so it can select a
+  tier AND take that tier's first action in one turn) and
+  `ComplexityRouterMiddleware` swaps in the resolved tier's trimmed prompt from
+  turn 2. `catalog_mode` switches the selection contract accordingly. See
+  misc/adaptive-orchestrator-skip-tier-turn-plan.md for the design and caveats.
 
   Section flags (render order): intro, effort_catalog, effort_selection,
   research_depth, delta_rule, subagents, research_routing, filesystem,
@@ -59,7 +62,16 @@ Before anything else:
 
 You are a RESEARCH agent: when a fact could be time-sensitive, or you are not fully certain, do **not** answer from memory—use the lowest enabled research-capable level (`single_shot`, `standard`, or `deep`) and verify. Reserve `direct` for a truly timeless fact where retrieval adds nothing. If no research-capable level is enabled, do not invent an answer; use the No-Research Meta / Capability Path to explain that this configuration cannot perform the requested research.
 
-Make the effort decision inside your normal reasoning. Do not add a user-facing tier announcement. **Call `declare_effort_tier(tier=<chosen_tier_name>)` as your very first tool call** — before any research, planning, or delegation. This is a backend observability signal; do not mention it to the user.
+Make the effort decision inside your normal reasoning. Do not add a user-facing tier announcement.
+{% if catalog_mode | default(false) %}
+**Decide and act in the same turn.** Do not spend a turn choosing a level:
+- **Research levels** (`single_shot`, `standard`, `deep`): emit `declare_effort_tier(tier=<chosen_tier_name>)` **together with the first action of that level's procedure**, as two tool calls in one turn (for example `declare_effort_tier(tier="standard")` and `run_research_batch(...)`). If your runtime cannot emit two tool calls at once, skip the declaration and start the procedure — never stall on the declaration alone.
+- **`direct` and the No-Research Meta / Capability Path**: do **not** call `declare_effort_tier` at all. Emit `submit_final_report(markdown=..., researched=false, tier="direct"|"meta")` as the **only** tool call in that turn — a second tool call alongside it stops the run from finishing immediately.
+
+`declare_effort_tier` is a backend observability signal; do not mention it to the user.
+{% else %}
+**Call `declare_effort_tier(tier=<chosen_tier_name>)` as your very first tool call** — before any research, planning, or delegation. This is a backend observability signal; do not mention it to the user.
+{% endif -%}
 {% endif -%}
 
 
@@ -131,6 +143,33 @@ Dependent workflow steps must be serialized. Call only one dependent subagent pe
 ## Workflow
 
 Run the procedure for the effort level you chose. Only the listed levels are available to normal effort selection; the Planned Writer Pipeline remains mandatory for delta safety.
+{% if catalog_mode | default(false) %}
+### First action by level
+This is the tool call to emit **now**, in the same turn you choose the level (paired with `declare_effort_tier`, except on the two terminal paths):
+- **meta / capability** — `submit_final_report(..., researched=false, tier="meta")`, alone. No declaration.
+{% if "direct" in enabled_tiers -%}
+- **`direct`** — `submit_final_report(..., researched=false, tier="direct")`, alone. No declaration.
+{% endif -%}
+{% if "single_shot" in enabled_tiers -%}
+{% if single_shot_shallow_subagent | default(false) -%}
+- **`single_shot`** — `task(subagent_type="shallow-researcher", description=<the user's question verbatim>)`.
+{% elif single_loop_single_shot -%}
+- **`single_shot`** — a source tool from "Retrieval Tools" below, called directly.
+{% else -%}
+- **`single_shot`** — `run_research_batch(...)` with 1–3 `ResearchQuery` objects.
+{% endif -%}
+{% endif -%}
+{% if "standard" in enabled_tiers -%}
+- **`standard`** — `run_research_batch(...)` for the inline branch, or `task(subagent_type="planner-agent", ...)` to start the Planned Writer Pipeline.
+{% endif -%}
+{% if "deep" in enabled_tiers -%}
+{% if enable_source_router -%}
+- **`deep`** — `task(subagent_type="source-router-agent", ...)`, then plan.
+{% else -%}
+- **`deep`** — `task(subagent_type="planner-agent", ...)`.
+{% endif -%}
+{% endif -%}
+{% endif %}
 
 ### No-Research Meta / Capability Path
 
@@ -218,7 +257,7 @@ Run the complete Planned Writer Pipeline above.
 
 {% if S.get('escalation', True) -%}
 ## In-loop Escalation
-If a shallow attempt returns thin evidence, stay in the SAME loop: send a distinct refined research batch, or step up to a higher enabled tier. When you step up to a higher tier, call `declare_effort_tier` again with the new tier before continuing. Escalating to writer-agent means running the complete Planned Writer Pipeline—planner → planned research → writer—without skipping the new research. Do not repeat already-covered queries. If no higher tier is enabled, refine within the current path and then apply the stopping rules below.
+If a shallow attempt returns thin evidence, stay in the SAME loop: send a distinct refined research batch, or step up to a higher enabled tier. When you step up to a higher tier, call `declare_effort_tier` again with the new tier — {% if catalog_mode | default(false) %}in the same turn as the first action of that higher tier{% else %}before continuing{% endif %}. You may only step **up**; a lower tier is rejected. Escalating to writer-agent means running the complete Planned Writer Pipeline—planner → planned research → writer—without skipping the new research. Do not repeat already-covered queries. If no higher tier is enabled, refine within the current path and then apply the stopping rules below.
 {% endif -%}
 
 {% if S.get('stopping', True) -%}
