@@ -125,6 +125,13 @@ register_agent(
 )
 
 register_agent(
+    agent_type="autonomous_researcher",
+    class_path="aiq_agent.agents.autonomous_researcher.agent.AutonomousResearcherAgent",
+    config_name="autonomous_research_agent",
+    description="Single graph with emergent, description-driven research depth per request",
+)
+
+register_agent(
     agent_type="report_rewriter",
     class_path="aiq_agent.agents.report_rewriter.agent.ReportRewriterAgent",
     config_name="deep_research_agent",

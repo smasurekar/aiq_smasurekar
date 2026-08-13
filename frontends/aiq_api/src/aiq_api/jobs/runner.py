@@ -74,6 +74,23 @@ _ADAPTIVE_RESEARCH_AGENT_KWARGS = _DEEP_RESEARCH_AGENT_KWARGS | {
     "dynamic_orchestrator_sections",
     "single_shot_search_budget",
 }
+# The autonomous agent drops every tier and source-router knob, so it accepts neither the
+# adaptive set nor the deep set. Without its own entry it would fall through to the generic
+# llm_provider+tools pattern below and silently lose its budgets, skills, sandbox, and artifact
+# wiring on the async-job path.
+_AUTONOMOUS_RESEARCH_AGENT_KWARGS = frozenset(
+    {
+        "enable_citation_verification",
+        "researcher_loop_guard",
+        "request_termination",
+        "skills",
+        "sandbox",
+        "job_id",
+        "max_research_concurrency",
+        "max_concurrent_source_tool_calls",
+        "max_source_tool_batch_size",
+    }
+)
 _CONFIGURABLE_AGENT_KWARGS = frozenset({"config", "job_id"})
 _JOB_SCOPED_AGENT_KWARGS = frozenset({"job_id"})
 _SHALLOW_RESEARCH_AGENT_KWARGS = frozenset({"max_tool_iterations", "enforce_citations"})
@@ -824,11 +841,16 @@ async def run_agent_job(
             if getattr(fn_config, "type", None) == "deep_research_agent":
                 from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
             if getattr(fn_config, "type", None) in ("deep_research_agent", "adaptive_research_agent"):
+            if getattr(fn_config, "type", None) in (
+                "deep_research_agent",
+                "adaptive_research_agent",
+                "autonomous_research_agent",
+            ):
                 from aiq_agent.agents.deep_researcher.register import resolve_deep_research_runtime_config
 
-                # Both the deep and adaptive research configs carry optional skills/sandbox
-                # refs that resolve_deep_research_runtime_config reads by attribute, so the
-                # same resolution applies to either config type.
+                # The deep, adaptive, and autonomous research configs all carry optional
+                # skills/sandbox refs that resolve_deep_research_runtime_config reads by
+                # attribute, so the same resolution applies to any of them.
                 skills_config, sandbox_config = resolve_deep_research_runtime_config(fn_config, builder)
                 fn_config = fn_config.model_copy(update={"skills": skills_config, "sandbox": sandbox_config})
 
@@ -1253,6 +1275,7 @@ def _create_agent_instance(
     """
     from aiq_agent.agents.data_science.register import DataScienceAgentConfig
     from aiq_agent.agents.adaptive_researcher.register import AdaptiveResearchAgentConfig
+    from aiq_agent.agents.autonomous_researcher.register import AutonomousResearchAgentConfig
     from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
     from aiq_agent.agents.shallow_researcher.register import ShallowResearchAgentConfig
 
@@ -1280,6 +1303,27 @@ def _create_agent_instance(
             gsf_cache_repeated_calls=fn_config.gsf_cache_repeated_calls,
             python_call_limit=fn_config.python_call_limit,
             finalization_model_call_limit=fn_config.finalization_model_call_limit,
+        )
+
+    if isinstance(fn_config, AutonomousResearchAgentConfig) and _constructor_accepts_explicit_kwargs(
+        agent_cls, _AUTONOMOUS_RESEARCH_AGENT_KWARGS
+    ):
+        return agent_cls(
+            llm_provider=llm_provider,
+            tools=tools,
+            verbose=verbose,
+            callbacks=callbacks,
+            enable_citation_verification=fn_config.enable_citation_verification,
+            researcher_loop_guard=fn_config.researcher_loop_guard,
+            request_termination=fn_config.request_termination,
+            skills=fn_config.skills,
+            sandbox=fn_config.sandbox,
+            job_id=job_id,
+            artifact_db_url=artifact_db_url,
+            artifact_emit=artifact_emit,
+            max_research_concurrency=fn_config.max_research_concurrency,
+            max_concurrent_source_tool_calls=fn_config.max_concurrent_source_tool_calls,
+            max_source_tool_batch_size=fn_config.max_source_tool_batch_size,
         )
 
     if isinstance(fn_config, AdaptiveResearchAgentConfig) and _constructor_accepts_explicit_kwargs(
