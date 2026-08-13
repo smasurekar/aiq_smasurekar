@@ -42,6 +42,7 @@ from langchain_core.tools import BaseTool
 from langgraph.store.memory import InMemoryStore
 
 from aiq_agent.agents.deep_researcher.custom_middleware import EmptyContentFixMiddleware
+from aiq_agent.agents.deep_researcher.custom_middleware import FinalReportCommitTracker
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolNameSanitizationMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolResultPruningMiddleware
@@ -58,6 +59,8 @@ from aiq_agent.agents.deep_researcher.factory import build_deep_research_subagen
 from aiq_agent.agents.deep_researcher.factory import build_deep_research_tool_set
 from aiq_agent.agents.deep_researcher.factory import build_researcher_runnable
 from aiq_agent.agents.deep_researcher.factory import runtime_visibility_middleware
+from aiq_agent.agents.deep_researcher.resource_limits import DeepResearchResourceLimits
+from aiq_agent.agents.deep_researcher.resource_limits import StateBudgetLedger
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
@@ -220,6 +223,9 @@ def build_adaptive_research_graph(
     single_shot_shallow_subagent: bool = False,
     shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
     shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+    resource_limits: DeepResearchResourceLimits | None = None,
+    final_report_tracker: FinalReportCommitTracker | None = None,
+    state_budget: StateBudgetLedger | None = None,
 ) -> AdaptiveResearchGraphRun:
     """Build the full DeepAgents graph for one adaptive research run.
 
@@ -265,6 +271,14 @@ def build_adaptive_research_graph(
             *cross_cutting_middleware,
         ]
 
+    # Upstream 2.2.0 made ``resource_limits``, ``final_report_tracker``, and ``state_budget``
+    # required on DeepResearchGraphContext. The adaptive agent has no per-tier notion of any of
+    # them, so it takes the same defaults the deep researcher uses (see
+    # ``deep_researcher.factory.build_deep_research_graph``): one ledger and one tracker per graph
+    # build, i.e. per request. The tracker is consumed by the writer subagent's
+    # ``RequiredOutputFileMiddleware``; the adaptive agent keeps its own extraction order and does
+    # not read it directly.
+    limits = resource_limits or DeepResearchResourceLimits()
     context = DeepResearchGraphContext(
         llm_provider=llm_provider,
         state=state,
@@ -276,9 +290,17 @@ def build_adaptive_research_graph(
         domain_catalog_path=domain_catalog_path,
         current_datetime=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         max_research_concurrency=max_research_concurrency,
+        resource_limits=limits,
         enable_source_router=enable_source_router,
         backend=runtime.backend,
         visibility_middleware=cross_cutting_middleware,
+        final_report_tracker=final_report_tracker or FinalReportCommitTracker(),
+        state_budget=state_budget
+        or StateBudgetLedger(
+            limits=limits,
+            files=state.files,
+            sandbox_enabled=runtime.execution_enabled,
+        ),
     )
 
     # --- Dynamic per-tier prompt sections (opt-in) -------------------------------------------
