@@ -1,0 +1,150 @@
+# Autonomous Researcher + Foundational RAG configuration.
+#
+# The A/B counterpart to config_adaptive_frag.yml: same model, same Tavily + FRAG tools, same
+# front end, same budgets where they are comparable. The only substantive difference is the agent
+# itself — autonomous_research_agent has no effort tiers, so every tier knob
+# (enabled_tiers / enforce_tier_tools / single_loop_single_shot / dynamic_orchestrator_sections /
+# single_shot_search_budget) and every source-router knob is simply absent rather than set to a
+# different value. It chooses its research depth from the tool and subagent descriptions.
+#
+# Run either config against the same eval harness to compare accuracy, tokens, and latency.
+#
+# Required env vars in deploy/.env:
+#   NVIDIA_API_KEY, TAVILY_API_KEY
+#   RAG_SERVER_URL, RAG_INGEST_URL
+#   COLLECTION_NAME (defaults to kg_rag if unset)
+#
+# Compose: set BACKEND_CONFIG=/app/configs/config_autonomous_frag.yml in deploy/.env
+# CLI:     nat serve --config_file configs/config_autonomous_frag.yml --port 8000
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  nemotron_super_llm:
+    _type: nim
+    # Inference Hub model details. NOTE: upstream 2.2.0 flags inference-api.nvidia.com as a
+    # deprecated endpoint (tests/aiq_agent/test_default_model_profiles.py). This config mirrors
+    # config_adaptive_frag.yml verbatim so the A/B hits the same endpoint on both arms; repoint
+    # both arms together when the branch moves off it.
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    # Self deployed model details:
+    # model_name: nvidia/nemotron-3-ultra-550b-a55b
+    # base_url: "http://10.86.10.114:8999/v1"
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: foundational_rag
+    collection_name: ${COLLECTION_NAME:-kg_rag}
+    top_k: 3
+    rag_url: ${RAG_SERVER_URL:-http://localhost:8081}
+    ingest_url: ${RAG_INGEST_URL:-http://localhost:8082}
+    timeout: 300
+
+  autonomous_research_agent:
+    _type: autonomous_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: nemotron_super_llm
+    researcher_llm: nemotron_super_llm
+    planner_llm: nemotron_super_llm
+    writer_llm: nemotron_super_llm
+    # Per-researcher budgets. Unchanged from config_adaptive_frag.yml: `depth` is a per-query
+    # knob, not an effort tier, so it carries over to the autonomous agent as-is. These bound one
+    # run_research_batch worker; the request-wide envelope below bounds the whole request.
+    researcher_loop_guard:
+      enabled: true
+      source_call_budgets:
+        low: 5
+        medium: 10
+        high: 20
+      max_identical_source_calls: 2
+      max_consecutive_thinks: 3
+    # Request-wide termination envelope. One flat budget set that ALWAYS applies — there is no
+    # per-tier lookup, so unlike the adaptive arm there is no cheap path that resolves to "no
+    # request-wide guard at all". Without this an orchestrator can spawn fresh run_research_batch
+    # calls indefinitely (each new researcher invocation resets the per-researcher budget), so a
+    # query for evidence the sources do not hold could run for hours.
+    #
+    # Values match config_adaptive_frag.yml's `deep` budgets, which is the comparable arm: the
+    # autonomous orchestrator has no tier to step down to, so it is bounded by the widest budget
+    # the adaptive agent could reach. max_total_research_queries is additionally hard-capped at 20
+    # by DeepResearchResourceLimits.
+    request_termination:
+      enabled: true
+      max_batch_calls: 6
+      max_total_research_queries: 20
+      max_orchestrator_turns: 100
+      max_identical_research_queries: 1
+      workflow_timeout_seconds: 2400
+      fallback_finalizer_timeout_seconds: 60
+      recursion_limit: 250
+    # The orchestrator holds every remaining tool DIRECTLY, alongside run_research_batch and task.
+    # Excluding a tool here is therefore the only way to keep it out of the model's hands — there
+    # is no tier ceiling and no ComplexityRouterMiddleware to hide it later.
+    #
+    # Synthesizing research APIs (you_research, you_finance_research) are excluded unconditionally
+    # in code, not here: they return their own finished cited answers, which would bypass the loop
+    # guards and the citation registry entirely.
+    exclude_tools:
+      # - web_search_tool
+      # - advanced_web_search_tool
+      - knowledge_search
+
+workflow:
+  _type: autonomous_research_workflow
