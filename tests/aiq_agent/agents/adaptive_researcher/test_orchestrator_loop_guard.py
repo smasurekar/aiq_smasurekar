@@ -38,6 +38,17 @@ def _cfg(**over) -> AdaptiveRequestTerminationConfig:
         recursion_limit=50,
     )
     base.update(over)
+    # AdaptiveRequestTerminationConfig rejects deep budgets below standard ("escalating effort
+    # must not reduce any limit"). These tests exercise standard-tier enforcement and so override
+    # only `standard`, often with values far above the crisp defaults above. Widen `deep`
+    # element-wise to preserve the invariant unless the caller set it explicitly.
+    if "deep" not in over:
+        standard, deep = base["standard"], base["deep"]
+        base["deep"] = AdaptiveTierBudgets(
+            max_batch_calls=max(deep.max_batch_calls, standard.max_batch_calls),
+            max_total_research_queries=max(deep.max_total_research_queries, standard.max_total_research_queries),
+            max_orchestrator_turns=max(deep.max_orchestrator_turns, standard.max_orchestrator_turns),
+        )
     return AdaptiveRequestTerminationConfig(**base)
 
 

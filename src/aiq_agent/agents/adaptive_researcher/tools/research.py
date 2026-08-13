@@ -58,7 +58,9 @@ def _log_research_depths(queries: list[AdaptiveResearchQuery]) -> None:
         depths["high"],
     )
     for query in queries:
-        preview = query.query if len(query.query) <= _QUERY_LOG_MAX_LENGTH else f"{query.query[:_QUERY_LOG_MAX_LENGTH]}…"
+        preview = (
+            query.query if len(query.query) <= _QUERY_LOG_MAX_LENGTH else f"{query.query[:_QUERY_LOG_MAX_LENGTH]}…"
+        )
         logger.info("  research query | depth=%-6s | %s", query.depth, preview)
 
 

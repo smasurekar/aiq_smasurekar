@@ -84,7 +84,13 @@ class TestOrchestratorWiring:
     def test_orchestrator_holds_finalize_tool_and_excludes_source_tools(self, mock_llm_provider):
         kwargs = _build_and_capture(mock_llm_provider)
         tool_names = [t.name for t in kwargs["tools"]]
-        assert tool_names == ["think", "get_verified_sources", "run_research_batch", "submit_final_report"]
+        assert tool_names == [
+            "think",
+            "get_verified_sources",
+            "run_research_batch",
+            "declare_effort_tier",
+            "submit_final_report",
+        ]
         assert "web_search_tool" not in tool_names
 
     def test_no_source_routing_guard_middleware(self, mock_llm_provider):
