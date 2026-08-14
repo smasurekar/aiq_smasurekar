@@ -37,7 +37,13 @@ dependencies = [
     "nvidia-nat-profiler==1.8.0",
     "nvidia-nat-redis==1.8.0",
     "nvidia-nat-security[guardrails]==1.8.0",
-    "deepagents>=0.6.5",
+    # Floor raised to 0.6.12 for the lc_deep_research example, which is the version its upstream
+    # (deepagents/examples/deep_research) pins and was tuned against. Capped below 0.7.0: that
+    # release drops TodoListMiddleware from create_deep_agent's defaults, which removes the
+    # write_todos tool the example's workflow prompt requires and which deep_researcher's
+    # TodoQuota/TodoSuppression middleware assume is present. Moving past it is a cross-agent
+    # migration, not a pin bump.
+    "deepagents>=0.6.12,<0.7.0",
     "langgraph-checkpoint-postgres>=3.0.0",
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langchain-modal==0.0.5",
@@ -47,6 +53,12 @@ dependencies = [
     "aiofiles>=23.0.0",
     "python-multipart>=0.0.27,<0.1",
     "knowledge-layer[all]",
+    # lc_deep_research ports the upstream example's own search tool, which uses the Tavily SDK
+    # directly (not langchain-tavily) plus httpx/markdownify to fetch and convert full pages.
+    # Runtime dependencies, not dev-only: they must reach the container image.
+    "tavily-python>=0.7.26",
+    "markdownify>=1.2.2",
+    "httpx>=0.28.1",
     # CVE version floors for transitive dependencies
     "mcp>=1.28.1,<2",
     "pillow>=12.3.0,<13",
@@ -104,6 +116,7 @@ aiq_shallow_researcher = "aiq_agent.agents.shallow_researcher.register"
 aiq_deep_researcher = "aiq_agent.agents.deep_researcher.register"
 aiq_adaptive_researcher = "aiq_agent.agents.adaptive_researcher.register"
 aiq_autonomous_researcher = "aiq_agent.agents.autonomous_researcher.register"
+aiq_lc_deep_research = "aiq_agent.agents.lc_deep_research.register"
 aiq_fastapi_extensions = "aiq_agent.fastapi_extensions.register"
 aiq_clarifier = "aiq_agent.agents.clarifier.register"
 aiq_data_source_registry = "aiq_agent.common.data_source_registry"
@@ -162,6 +175,14 @@ extend-ignore = [
 # Notebooks: allow long lines (shell/code) and imports after other statements
 [tool.ruff.lint.per-file-ignores]
 "docs/notebooks/*.ipynb" = ["E501", "E402"]
+# Ported verbatim from the upstream LangChain DeepAgents deep_research example. prompts.py is
+# byte-identical to upstream by design (a fidelity test enforces it) and tools.py deviates only in
+# how the Tavily client is constructed, so upstream's line lengths and combined imports are left
+# alone rather than reflowed into AI-Q house style.
+# E501/I001/UP035: upstream's line lengths, combined imports, and typing_extensions usage.
+# W291/W293: RESEARCHER_INSTRUCTIONS contains a trailing space inside the prompt string; stripping
+# it would edit what the model sees.
+"src/aiq_agent/agents/lc_deep_research/research_agent/*.py" = ["E501", "I001", "UP035", "W291", "W293"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

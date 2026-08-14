@@ -1,0 +1,133 @@
+# LangChain DeepAgents deep-research example + Foundational RAG configuration.
+#
+# The third A/B arm alongside config_adaptive_frag.yml and config_autonomous_frag.yml: same model,
+# same front end, same eval harness. The agent is a faithful port of the upstream LangChain
+# DeepAgents deep_research example (deepagents/examples/deep_research) -- upstream prompts and
+# tools verbatim, driven by a NAT-provided LLM instead of a hard-coded Anthropic model.
+#
+# What differs from the other two arms, and why the knob list is so short: this arm runs no
+# citation verification, no report sanitization, no source registry, no loop guards, and no tier
+# routing. Those are AI-Q additions that rewrite the report; applying them here would mean the
+# measurement no longer describes the upstream design. The only knobs are the model, upstream's two
+# delegation limits, and a recursion backstop.
+#
+# Required env vars in deploy/.env:
+#   NVIDIA_API_KEY, TAVILY_API_KEY
+#   RAG_SERVER_URL, RAG_INGEST_URL
+#   COLLECTION_NAME (defaults to kg_rag if unset)
+#
+# Compose: set BACKEND_CONFIG=/app/configs/config_lc_deep_research_frag.yml in deploy/.env
+# CLI:     nat serve --config_file configs/config_lc_deep_research_frag.yml --port 8000
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  nemotron_super_llm:
+    _type: nim
+    # Inference Hub model details. NOTE: upstream 2.2.0 flags inference-api.nvidia.com as a
+    # deprecated endpoint (tests/aiq_agent/test_default_model_profiles.py). This config mirrors
+    # config_adaptive_frag.yml and config_autonomous_frag.yml so the A/B hits the same endpoint on
+    # every arm; repoint all arms together when the branch moves off it.
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    # Self deployed model details:
+    # model_name: nvidia/nemotron-3-ultra-550b-a55b
+    # base_url: "http://10.86.10.114:8999/v1"
+    # Middle ground for iteration 1: upstream runs the example at temperature 0.0, the adaptive and
+    # autonomous arms run at 0.7. 0.4 keeps the comparison readable while we tune.
+    temperature: 0.4
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+functions:
+  # ---------------------------------------------------------------------------------------------
+  # INERT FOR THIS AGENT. lc_deep_research_agent takes no `tools` list: its only retrieval path is
+  # the upstream example's own `tavily_search`, which calls the Tavily API directly through
+  # TavilyClient and never touches these NAT functions. In particular `max_results: 5` below does
+  # NOT apply -- the effective value is max_results=1 inside
+  # src/aiq_agent/agents/lc_deep_research/research_agent/tools.py, which is upstream's deliberate
+  # depth-over-breadth choice (one URL per query, but the full page is fetched).
+  #
+  # The block is kept so (a) the Harbor eval YAML for this arm stays a three-line diff against
+  # deepsearchqa_autonomous_frag.yaml, whose preflight asserts required_data_sources: [web_search]
+  # with strict_tools: true, and (b) the AI-Q UI still renders its source toggles.
+  # ---------------------------------------------------------------------------------------------
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: foundational_rag
+    collection_name: ${COLLECTION_NAME:-kg_rag}
+    top_k: 3
+    rag_url: ${RAG_SERVER_URL:-http://localhost:8081}
+    ingest_url: ${RAG_INGEST_URL:-http://localhost:8082}
+    timeout: 300
+
+  lc_deep_research_agent:
+    _type: lc_deep_research_agent
+    # One model ref, not four: upstream passes a single model to create_deep_agent and the research
+    # sub-agent inherits it.
+    llm: nemotron_super_llm
+    verbose: true
+    # Upstream values. Both are rendered into the delegation prompt and enforced by orchestrator
+    # compliance rather than by middleware -- that is upstream's design, not an oversight.
+    max_concurrent_research_units: 3
+    max_researcher_iterations: 3
+    # Crash backstop only. LangGraph's default of 25 steps aborts otherwise-healthy multi-round,
+    # multi-sub-agent runs with a GraphRecursionError.
+    recursion_limit: 100
+    # No hard deadline: the eval harness applies its own per-trial timeout, and upstream has none.
+    # workflow_timeout_seconds: 2400
+
+workflow:
+  _type: lc_deep_research_workflow

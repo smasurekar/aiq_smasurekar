@@ -132,6 +132,13 @@ register_agent(
 )
 
 register_agent(
+    agent_type="lc_deep_research",
+    class_path="aiq_agent.agents.lc_deep_research.agent.LcDeepResearchAgent",
+    config_name="lc_deep_research_agent",
+    description="Upstream LangChain DeepAgents deep-research example, run on a NAT-provided model",
+)
+
+register_agent(
     agent_type="report_rewriter",
     class_path="aiq_agent.agents.report_rewriter.agent.ReportRewriterAgent",
     config_name="deep_research_agent",

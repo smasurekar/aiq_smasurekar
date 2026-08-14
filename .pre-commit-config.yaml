@@ -40,7 +40,15 @@ repos:
       - id: end-of-file-fixer
         exclude: ^skills/[^/]+/skill\.oms\.sig$
       - id: trailing-whitespace
-        exclude: ^skills/[^/]+/skill-card\.md$
+        # research_agent/prompts.py is copied byte-for-byte from the upstream LangChain DeepAgents
+        # deep_research example and carries a trailing space *inside* RESEARCHER_INSTRUCTIONS.
+        # Stripping it would edit the prompt the model sees, which is exactly what the fidelity
+        # test in tests/aiq_agent/agents/lc_deep_research/ exists to prevent.
+        exclude: |
+          (?x)^(
+            skills/[^/]+/skill-card\.md|
+            src/aiq_agent/agents/lc_deep_research/research_agent/prompts\.py
+          )$
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0

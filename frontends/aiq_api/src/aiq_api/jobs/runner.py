@@ -837,8 +837,11 @@ async def run_agent_job(
 
             provider, llm = await _create_llm_provider(builder, fn_config)
 
-            # Resolve tools: use explicit list or auto-inherit from data_source_registry
-            tool_refs = fn_config.tools
+            # Resolve tools: use explicit list or auto-inherit from data_source_registry.
+            # getattr, not attribute access: not every registered agent config declares `tools`
+            # (lc_deep_research deliberately does not -- its search tool is not a NAT function),
+            # and a bare `fn_config.tools` raises AttributeError before such an agent can start.
+            tool_refs = getattr(fn_config, "tools", None)
             if not tool_refs:
                 from aiq_agent.common import get_all_tool_refs
 
