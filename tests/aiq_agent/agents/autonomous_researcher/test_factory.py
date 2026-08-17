@@ -180,16 +180,45 @@ class TestOrchestratorPrompt:
         assert "Never answer from memory" in prompt
         assert "time-sensitive" in prompt
 
-    def test_differentiates_the_three_research_paths(self, mock_llm_provider):
-        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
-        assert "Choosing a research path" in prompt
-        for path in ("researcher-agent", "run_research_batch", "source tool directly"):
-            assert path in prompt
+    def test_decision_section_names_every_route(self, mock_llm_provider):
+        """Every route must be reachable from the decision section.
 
-    def test_lists_source_tools_as_directly_callable(self, mock_llm_provider):
+        Asserting planner-agent specifically: the previous prompt described the planner only in an
+        advisory block outside the routing menu, and it won zero routing decisions across 90 eval
+        trials. Since writer-agent is gated on /shared/plan.json, that also forced zero writer calls.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "Deciding what to do" in prompt
+        for route in ("submit_final_report", "run_research_batch", "researcher-agent", "planner-agent"):
+            assert route in prompt, route
+
+    def test_decision_section_is_not_a_tier_ladder(self, mock_llm_provider):
+        """The whole point of this agent is that requests are not classified into effort levels.
+
+        Guards the regression this prompt was rewritten twice to avoid: an enumerated set of
+        request kinds is a tier system regardless of whether middleware enforces it.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        for ladder_artifact in ("opening move", "Shape A", "shape B", "Start at A", "climb"):
+            assert ladder_artifact not in prompt, ladder_artifact
+
+    def test_states_the_budgets_as_numbers(self, mock_llm_provider):
+        """Budgets are prompt-only here (nothing enforces them), so assert the text carries them."""
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "## Budgets" in prompt
+        assert "at most 2 per request" in prompt
+
+    def test_states_the_answer_set_contract(self, mock_llm_provider):
+        """The precision fix: the answer may not enumerate rejected candidates."""
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "What goes in the answer" in prompt
+        assert "only qualifying members" in prompt
+
+    def test_lists_source_tools_as_callable_but_budgeted(self, mock_llm_provider):
+        """Source tools stay in the orchestrator's hands; the prompt demotes them to verification."""
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
         assert "web_search_tool" in prompt
-        assert "You hold all of these directly" in prompt
+        assert "2-call verification budget" in prompt
 
     def test_delta_block_requires_planner_before_writer(self, mock_llm_provider):
         state = AutonomousResearchAgentState(
