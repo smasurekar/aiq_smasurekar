@@ -205,7 +205,9 @@ class TestOrchestratorPrompt:
     def test_states_the_budgets_as_numbers(self, mock_llm_provider):
         """Budgets are prompt-only here (nothing enforces them), so assert the text carries them."""
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
-        assert "## Budgets" in prompt
+        # Top-level sections are `#`; `## Budgets` would also match a bare `# Budgets` substring
+        # check, so anchor on the newline to assert the heading level as well as the section.
+        assert "\n# Budgets\n" in prompt
         assert "at most 2 per request" in prompt
 
     def test_states_the_answer_set_contract(self, mock_llm_provider):
