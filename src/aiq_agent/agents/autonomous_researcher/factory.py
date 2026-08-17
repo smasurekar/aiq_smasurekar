@@ -113,32 +113,44 @@ build_autonomous_research_tool_set = build_deep_research_tool_set
 # SubAgentMiddleware appends "Available subagent types:" plus each description verbatim to the
 # `task` tool. In a design with no tier table and no tool hiding, these strings ARE the routing
 # logic, so each one answers "when should the orchestrator pick me?" without reference to any
-# effort level. They differentiate on context isolation and scale, matching the prompt's
-# "Choosing a research path" section.
+# effort level. Each trigger below is a PROPERTY of the request, matching the two the orchestrator
+# prompt's "Deciding what to do" section reads off it — researcher-agent answers "the unknowns
+# depend on each other", planner-agent answers "the deliverable's structure is part of the ask".
+# The prompt and these strings must be edited together or the routing advice contradicts itself.
+#
+# Stated as properties rather than as request categories on purpose: this agent exists to drop the
+# tier ladder, and an enumerated set of request kinds would reintroduce it under another name. The
+# earlier wording keyed off style ("comprehensive", "deep dive") instead, and won zero planner
+# routing decisions across 90 DeepSearchQA trials; since writer-agent requires /shared/plan.json,
+# that forced zero writer calls too. See
+# misc/autonomous_researcher/autonomous-orchestrator-prompt-redesign-plan.md §D2.
 
 RESEARCHER_SUBAGENT_DESCRIPTION = (
     "Investigate ONE topic end-to-end in an isolated context and return structured, cited findings. "
-    "Choose this when a single question needs iterative multi-hop work — resolve one fact, then use it "
-    "to find the next — and you want the search trail digested rather than dumped into your own context. "
-    "Give it exactly one topic, stated with full standalone context. For several INDEPENDENT questions at "
-    "once use run_research_batch instead; for one quick lookup whose raw results you want to see, call a "
-    "source tool directly."
+    "Choose this when the question is a PREREQUISITE CHAIN — you must resolve one fact before you can "
+    "even write the next query — because parallel workers cannot pass results to each other. Also "
+    "choose it when a lookup has already failed twice and you want a fresh, isolated attempt: give it "
+    "the whole chain plus what you already tried, so it does not repeat you. Give it exactly one topic, "
+    "stated with full standalone context. For several INDEPENDENT questions use run_research_batch."
 )
 
 PLANNER_SUBAGENT_DESCRIPTION = (
-    "Turn a complex or multi-part request into an explicit answer strategy plus a set of ResearchQuery "
-    "objects, persisted to /shared/plan.json. Choose this when the request has several interacting parts, "
-    "an output shape that must be decided up front (a report, a comparison matrix, a briefing), or when you "
-    "intend to publish through writer-agent — writer-agent reads its output contract from the plan, so "
-    "planning is mandatory before any writer delegation. Skip it when you can answer inline."
+    "Turn a compound request into an explicit answer strategy plus a set of ResearchQuery objects, "
+    "persisted to /shared/plan.json. Choose this when ANY of these is true: (1) the request contains "
+    "three or more distinct deliverables; (2) the answer's structure must be fixed before research — a "
+    "sectioned report, a comparison matrix, a briefing — which also means you intend to publish through "
+    "writer-agent, since writer-agent reads its output contract from the plan; (3) a parent report is "
+    "mounted for this request. For a multi-part RESEARCH request this supersedes write_todos: delegate "
+    "here rather than writing a todo list and researching it yourself. Skip it when one batch of queries "
+    "and an inline answer would fully satisfy the request."
 )
 
 WRITER_SUBAGENT_DESCRIPTION = (
     "Synthesize a long-form cited report from /shared/plan.json and the research notes under /shared/, "
-    "writing the result to /shared/output.md. Choose this only when the answer is genuinely report-shaped "
-    "and long enough that composing it inline would degrade it. Requires /shared/plan.json to exist first; "
-    "the call is rejected otherwise. For anything you can write yourself, do that and call "
-    "submit_final_report."
+    "writing the result to /shared/output.md. Choose this only when the deliverable has named sections "
+    "the user asked for and is long enough that composing it inline would degrade it. Requires "
+    "/shared/plan.json to exist first; the call is rejected otherwise. For anything you can write "
+    "yourself, do that and call submit_final_report."
 )
 
 # Not a real delegation route. Supplying a spec under this name is what suppresses deepagents'

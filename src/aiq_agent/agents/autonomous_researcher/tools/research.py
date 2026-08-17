@@ -27,7 +27,8 @@ helpers, so the three agents cannot drift on evidence handling.
 
 The tool description is load-bearing: in a description-driven architecture it is what
 differentiates this path from a direct source-tool call and from ``task(researcher-agent)``.
-See ``prompts/orchestrator.j2`` ("Choosing a research path") for the matching prompt guidance.
+See ``prompts/orchestrator.j2`` ("Deciding what to do") for the matching prompt guidance: this
+tool is the path for unknowns that do *not* depend on each other.
 """
 
 from __future__ import annotations
@@ -56,20 +57,35 @@ logger = logging.getLogger(__name__)
 _NO_TOOL_RUNTIME = cast(ToolRuntime, None)
 _QUERY_LOG_MAX_LENGTH = 80
 
-_RESEARCH_BATCH_DESCRIPTION = """Investigate SEVERAL INDEPENDENT questions at once, in parallel isolated contexts.
+# Routing text, not documentation. This description is what makes the independent-unknowns path of
+# the orchestrator prompt's "Deciding what to do" section reachable, so it must stay in step with
+# prompts/orchestrator.j2. Three claims here are load-bearing and were added deliberately:
+# a one-query batch is legitimate (so a single unknown goes through a worker rather than the
+# orchestrator searching directly into its own long-lived context); `high` depth is priced as
+# expensive and capped at one per request (it was declared on 42% of queries for no measurable F1
+# return); and a
+# second batch is scoped to consuming a resolved prerequisite (two-batch runs were the worst
+# scoring bucket in the eval). See
+# misc/autonomous_researcher/autonomous-orchestrator-prompt-redesign-plan.md §D3, §D6, §D7.
+_RESEARCH_BATCH_DESCRIPTION = """Run one or more independent research questions in parallel isolated contexts.
 
-Pick this when you have more than one distinct thing to find out and the answers do not depend
-on each other — each query runs as its own researcher worker, so nothing one worker learns can
-inform another. For a single topic that needs iterative, multi-hop digging, use
-`task(subagent_type="researcher-agent", ...)` instead; for one quick lookup whose raw results you
-want in front of you, call a source tool directly.
+This is the normal way to research. A batch of ONE query is valid and is the right call for a single
+self-contained fact — prefer it over searching yourself, because a worker's search trail is digested
+before it reaches you instead of accumulating in your context.
 
-Each `ResearchQuery` needs: `query` (full standalone context — workers cannot see this
-conversation), `preferred_tools` (exact source-tool names), `target_components`, a `rationale`,
-and a `depth`:
-  - `low`    — one quick self-contained lookup;
-  - `medium` — a few corroborating searches (the default);
-  - `high`   — iterative multi-hop, where each result informs the next search.
+Each query runs as its own worker, so nothing one worker learns can inform another. If one question
+cannot be written until another is answered, that is a prerequisite chain: use
+`task(subagent_type="researcher-agent", ...)` for the whole chain instead of fanning out.
+
+Issue ONE batch per request as the default. A second batch is for consuming a prerequisite you have
+now resolved — not for re-asking a question that came back thin.
+
+Each `ResearchQuery` needs: `query` (full standalone context — workers cannot see your conversation),
+`preferred_tools` (exact source-tool names), `target_components`, a `rationale`, and a `depth`:
+  - `low`    — one quick self-contained lookup (the default choice);
+  - `medium` — a few corroborating searches;
+  - `high`   — iterative multi-hop, where each result informs the next search. Expensive: at most one
+               per request, and only for a genuine chain.
 
 Returns a JSON array of `ResearchNotes` and persists each note as a JSON file under `/shared/`;
 every source the workers cited is added to the verified-source set for `get_verified_sources`."""
