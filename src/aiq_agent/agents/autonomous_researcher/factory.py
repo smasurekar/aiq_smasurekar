@@ -643,10 +643,17 @@ def build_autonomous_research_graph(
     # list cannot be withdrawn with them. `task`, `write_todos`, and the six filesystem tools were
     # already schema-only and have never needed a prompt entry. See
     # misc/autonomous_researcher/autonomous-researcher-review-feedback-analysis.md §1.10.
+    #
+    # No `request_budgets=` and no `max_research_concurrency=` here on purpose. Budgets are the
+    # middleware's to own and to state: AutonomousOrchestratorLoopGuardMiddleware enforces every
+    # ceiling, explains itself in the blocked ToolMessage when one fires, and warns in-context via
+    # the nudge before withdrawing the source tools. A prompt copy could only drift from it — that
+    # is exactly how the prompt came to promise "one batch per request" against a configured 6 —
+    # and it is re-sent on every turn whether or not any budget is close. The per-batch query
+    # ceiling moved to the run_research_batch description, next to the schema that enforces it.
     orchestrator_system_prompt = context.render_prompt(
         "orchestrator",
         clarifier_result=context.state.clarifier_result,
-        max_research_concurrency=context.max_research_concurrency,
         execution_enabled=context.runtime.execution_enabled,
         parent_report_context_available=context.parent_report_context_available,
     )
