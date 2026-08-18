@@ -73,7 +73,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import ToolMessage
 
-from aiq_agent.agents.adaptive_researcher.custom_middleware import _canonical_research_query_signature
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _normalize_text
 from aiq_agent.agents.deep_researcher.custom_middleware import FINAL_REPORT_STATE_PATHS
 from aiq_agent.agents.deep_researcher.custom_middleware import FinalReportCommitTracker
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
@@ -105,6 +105,21 @@ _TASK_DESCRIPTION_ARG = "description"
 _GENERATED_RETRY_MARKER = "aiq_generated_retry"
 
 _NOTE_SLUG_MAX_LENGTH = 40
+
+# Appended (not overwritten) to the direct source-tool result that spends the last of the
+# orchestrator's own search budget. Appending preserves that call's evidence — the model still
+# needs it — while explaining in-context why the source tools are about to disappear. The
+# withdrawal in ``_filter_tools`` is the hard guarantee; this is the explanation. Mirrors
+# ``_SINGLE_SHOT_BUDGET_NUDGE`` in the adaptive arm, but points at delegation rather than at
+# finalization: direct search closing does not mean research is over here.
+_DIRECT_SOURCE_BUDGET_NUDGE = (
+    "\n\n[SYSTEM — direct-search budget reached: you have used your own source-tool calls for "
+    "this request, and those tools are now withdrawn. Research is NOT over. Delegate any "
+    "remaining lookup through `run_research_batch`, or give a dependent chain to "
+    '`task(subagent_type="researcher-agent", ...)` — a worker\'s search trail is digested before '
+    "it reaches you instead of accumulating in your context. Only finalize once the evidence is "
+    "sufficient.]"
+)
 
 
 # =================================================================================================
@@ -564,6 +579,74 @@ class AutonomousFinalizationMiddleware(AgentMiddleware):
 # =================================================================================================
 
 
+def _canonical_request_query_signature(query: object) -> str:
+    """Hash a ResearchQuery for the *request-wide* duplicate ledger, ignoring ``depth``.
+
+    This is deliberately not ``adaptive_researcher``'s ``_canonical_research_query_signature``,
+    which folds ``depth`` into the hash. Two reasons, and the first is a correctness bug the
+    shared helper would reintroduce here:
+
+    1. This guard clamps ``high`` down to ``medium`` past the per-request allowance. If ``depth``
+       were part of the signature, the same question re-sent at ``high`` in a later batch would be
+       clamped, hash differently from its own earlier run, and execute again — the clamp itself
+       would become a duplicate bypass.
+    2. Asking the same question harder is still asking the same question. Re-running a query for
+       "more depth" is exactly the behavior the research loop tells the orchestrator not to do,
+       so it should collide rather than count as new work.
+
+    Everything else matches the shared helper: normalized query text, ordered normalized
+    subqueries (order is meaningful), sorted target components, sorted preferred tools. Free-form
+    ``rationale`` and ``fallback_tools`` are omitted so padding a query cannot bypass detection.
+    Accepts a dict (raw LLM tool args) or a Pydantic model. Only the hash is retained.
+    """
+
+    def _get(field: str, default: object) -> object:
+        if isinstance(query, dict):
+            return query.get(field, default)
+        return getattr(query, field, default)
+
+    canonical = {
+        "query": _normalize_text(_get("query", "")),
+        "subqueries": [_normalize_text(s) for s in (_get("subqueries", []) or [])],
+        "target_components": sorted(_normalize_text(c) for c in (_get("target_components", []) or [])),
+        "preferred_tools": sorted(_normalize_text(t) for t in (_get("preferred_tools", []) or [])),
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_direct_source_signature(tool_name: str, args: object) -> str:
+    """Hash a direct source-tool call into a normalized, content-free signature.
+
+    ``adaptive_researcher``'s ``_canonical_source_signature`` sorts JSON keys but leaves string
+    *values* untouched, so ``"same"`` and ``"  SAME  "`` hash differently and both execute. That
+    is tolerable inside one researcher invocation, where the budget is small and short-lived, but
+    this ledger spans the whole request and exists specifically to stop an orchestrator re-issuing
+    near-identical searches into its own context. Values are therefore normalized with the same
+    ``_normalize_text`` (NFKC, whitespace-collapsed, casefolded) the query signature uses.
+
+    Only the hash is retained — raw argument text is never kept.
+    """
+
+    def _norm(value: object) -> object:
+        if isinstance(value, str):
+            return _normalize_text(value)
+        if isinstance(value, dict):
+            return {str(key): _norm(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_norm(item) for item in value]
+        return value
+
+    payload = json.dumps(
+        {"tool": _normalize_text(tool_name), "args": _norm(args)},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=repr,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
     """Bound the whole request: research batches, delegated queries, and orchestrator turns.
 
@@ -588,6 +671,16 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
     - A batch that would exceed ``max_batch_calls`` or ``max_total_research_queries``, or that
       repeats a normalized query beyond ``max_identical_research_queries``, is **not executed** —
       a deterministic error ``ToolMessage`` is returned and the request enters ``finalizing``.
+    - ``task(subagent_type="researcher-agent")`` spends the same ``max_batch_calls`` ceiling as a
+      one-query batch. The two are the same capability behind two doors; budgeting only one of
+      them leaves the other as a free escape hatch, including after the request has begun
+      finalizing.
+    - Queries past ``max_high_depth_queries`` are **clamped** from ``high`` to ``medium`` rather
+      than rejected. Clamping loses no work and costs no corrective turn; rejecting would do both.
+    - The orchestrator's own direct source-tool calls are capped at ``max_direct_source_calls``,
+      with repeats of one normalized call signature capped at
+      ``max_identical_direct_source_calls``. Spending this budget withdraws the source tools but
+      deliberately does **not** finalize the request — see below.
     - Once finalizing (or once model turns exceed ``max_orchestrator_turns``),
       ``run_research_batch``, ``think``, and every direct source tool are withdrawn from later
       model calls so the orchestrator can only finalize from evidence already collected.
@@ -596,6 +689,17 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
     there the orchestrator held source tools only on the ``single_loop_single_shot`` path, where
     a separate per-tier budget capped them. Here it always holds them, so leaving them visible
     while "finalizing" would let it keep researching one direct call at a time.
+
+    Two asymmetries in here are deliberate, and both would be easy to "fix" into a regression:
+
+    1. **Exhausting the direct-search budget does not finalize the request.** Finalizing withdraws
+       ``run_research_batch`` and ``think`` as well, which would push the model to answer when the
+       intended response is to *delegate instead*. Direct search closes; research continues.
+    2. **Direct-call duplicate detection is scoped to the direct path only.** A direct call that
+       repeats a question a worker already researched is verification, which is precisely what the
+       direct budget is reserved for. Only direct-against-direct repeats are blocked — the shape
+       seen in the runaway trials, where the orchestrator re-issued near-identical searches into
+       its own context.
 
     Logging is metadata-only (request tag, phase, counts, truncated hashed signature) — never raw
     query arguments.
@@ -613,6 +717,12 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
         self._total_query_count = 0
         self._model_turn_count = 0
         self._query_signature_counts: dict[str, int] = {}
+        # The orchestrator's own source-tool calls, budgeted separately from delegated research
+        # because their results land in the parent conversation and are re-sent every later turn.
+        self._direct_source_call_count = 0
+        self._direct_source_signature_counts: dict[str, int] = {}
+        # ``depth: "high"`` queries admitted so far; later ones are clamped, not rejected.
+        self._high_depth_query_count = 0
 
     # --- introspection helpers (used by tests and by operators reading logs) ------------------
 
@@ -663,11 +773,27 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
                 return queries
         return []
 
+    def _direct_budget_spent(self) -> bool:
+        """Return True once the orchestrator has used its own direct source-call budget."""
+        return self._direct_source_call_count >= self._config.max_direct_source_calls
+
     def _filter_tools(self, tools: list[object]) -> list[object]:
-        """Withdraw every research affordance once the request is finalizing."""
-        if not self._config.enabled or self._phase == "active":
+        """Withdraw the research affordances this request has spent the budget for.
+
+        Two independent withdrawals, and the narrower one must not be widened into the other:
+
+        - Finalizing withdraws everything research-related, leaving only the finalize path.
+        - A spent *direct* budget withdraws only the source tools. ``run_research_batch`` and
+          ``think`` stay, because the intended next move is to delegate rather than to answer.
+        """
+        if not self._config.enabled:
             return tools
-        hidden = {RUN_RESEARCH_BATCH_TOOL, THINK_TOOL, *self._source_tool_names}
+        if self._phase != "active":
+            hidden = {RUN_RESEARCH_BATCH_TOOL, THINK_TOOL, *self._source_tool_names}
+        elif self._direct_budget_spent():
+            hidden = set(self._source_tool_names)
+        else:
+            return tools
         return [tool for tool in tools if _request_tool_name(tool) not in hidden]
 
     def _maybe_force_finalize_on_turns(self) -> None:
@@ -692,13 +818,192 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
         return await handler(request.override(tools=self._filter_tools(request.tools)))
 
     async def awrap_tool_call(self, request, handler):
-        """Enforce request-wide batch, query, and duplicate budgets before a batch runs."""
+        """Route each tool call to the budget that governs it.
+
+        Four paths, and the order matters only in that the two research doors must both be
+        reached before the catch-all passthrough:
+
+        - a direct source tool -> the orchestrator's own search budget;
+        - ``task`` -> the shared research budget, but only for ``researcher-agent``;
+        - ``run_research_batch`` -> the batch/query/duplicate budgets and the depth clamp;
+        - anything else (``think``, ``get_verified_sources``, filesystem tools, the finalizer)
+          -> untouched.
+        """
         tool_call = getattr(request, "tool_call", None)
         if not self._config.enabled or not isinstance(tool_call, dict):
             return await handler(request)
-        if tool_call.get("name") != RUN_RESEARCH_BATCH_TOOL:
+        name = tool_call.get("name")
+        if name in self._source_tool_names:
+            return await self._guard_direct_source_call(name, tool_call, request, handler)
+        if name == TASK_TOOL:
+            return await self._guard_delegation(tool_call, request, handler)
+        if name != RUN_RESEARCH_BATCH_TOOL:
+            return await handler(request)
+        return await self._guard_research_batch(tool_call, request, handler)
+
+    async def _guard_direct_source_call(self, name, tool_call, request, handler):
+        """Bound the source-tool calls the orchestrator makes itself, in its own context.
+
+        This is the budget the eval identified as the dominant token lever: 480 direct calls
+        against the adaptive arm's 34, with single trials reaching 61 and 62. Unlike a worker's
+        search, a direct result stays in the parent conversation and is re-sent on every later
+        turn, so the cost of one call compounds across the rest of the run.
+
+        Spending this budget withdraws the source tools (``_filter_tools``) but leaves
+        ``run_research_batch`` and ``task`` in place: the intended response is to delegate the
+        remaining lookups, not to stop researching.
+        """
+        if self._phase != "active":
+            self._log_block("already_finalizing")
+            return self._blocked_result(
+                tool_call,
+                "Source research is closed: the request has reached its research budget and is finalizing. "
+                "Call get_verified_sources and submit_final_report to write your final answer from the "
+                "evidence already gathered; represent any missing components as explicit gaps.",
+            )
+
+        # --- Reserve before awaiting so a turn of parallel searches shares one ceiling. ---
+        if self._direct_budget_spent():
+            self._log_block("direct_source_budget", budget=self._config.max_direct_source_calls)
+            return self._blocked_result(
+                tool_call,
+                f"Direct-search budget reached "
+                f"({self._direct_source_call_count}/{self._config.max_direct_source_calls} calls). Your own "
+                "source-tool calls are spent for this request, but research is not over. Delegate the "
+                "remaining lookups through run_research_batch, or give a dependent chain to "
+                'task(subagent_type="researcher-agent", ...). Finalize only once the evidence is sufficient.',
+            )
+
+        signature = _canonical_direct_source_signature(name, tool_call.get("args", {}))
+        if self._direct_source_signature_counts.get(signature, 0) >= self._config.max_identical_direct_source_calls:
+            self._log_block("duplicate_direct_source_call", signature=signature)
+            return self._blocked_result(
+                tool_call,
+                "Duplicate direct search blocked: you have already run this exact search in this request, and "
+                "repeating it returns the same results while doubling their cost in your context. Change the "
+                "target rather than the wording — the source organization, a page that quotes the figure, or a "
+                "mirror — or delegate the lookup through run_research_batch.",
+            )
+
+        self._direct_source_call_count += 1
+        self._direct_source_signature_counts[signature] = self._direct_source_signature_counts.get(signature, 0) + 1
+        logger.info(
+            "Autonomous loop guard: request=%s direct_source=%d/%d turns=%d",
+            self._request_tag,
+            self._direct_source_call_count,
+            self._config.max_direct_source_calls,
+            self._model_turn_count,
+        )
+        result = await handler(request)
+
+        # ``>=`` rather than ``==``: parallel calls in one turn can overshoot the budget together,
+        # and every one of them should still carry the explanation.
+        if self._direct_budget_spent():
+            try:
+                result = result.model_copy(update={"content": f"{result.content}{_DIRECT_SOURCE_BUDGET_NUDGE}"})
+            except Exception:
+                # Non-Pydantic or immutable result: the withdrawal in _filter_tools still enforces
+                # the cap, so a missing nudge is a soft degradation rather than a failure.
+                pass
+        return result
+
+    async def _guard_delegation(self, tool_call, request, handler):
+        """Spend the shared research budget on ``task(researcher-agent)``.
+
+        ``run_research_batch`` and ``task(researcher-agent)`` are one capability behind two doors.
+        Budgeting only the batch left the delegation door free — including after the request had
+        entered ``finalizing``, when every other research affordance is withdrawn but ``task``
+        cannot be, because ``task(writer-agent)`` is one of the two ways a run legitimately ends.
+        The gate therefore lives here, keyed on ``subagent_type``, rather than in ``_filter_tools``.
+        """
+        args = tool_call.get("args")
+        subagent = args.get(_SUBAGENT_TYPE_ARG) if isinstance(args, dict) else None
+        if subagent != RESEARCHER_SUBAGENT:
+            # planner-agent and writer-agent do no research fan-out; writer-agent is an exit.
             return await handler(request)
 
+        if self._phase != "active":
+            self._log_block("already_finalizing")
+            return self._blocked_result(
+                tool_call,
+                "Source research is closed: the request has reached its research budget and is finalizing. "
+                "Do not delegate further research. Call get_verified_sources and submit_final_report to write "
+                "your final answer from the evidence already gathered; represent missing components as gaps.",
+            )
+
+        # A researcher delegation is one research call carrying one question, so it spends the
+        # batch ceiling and one query slot — the same cost as a one-query batch.
+        if self._batch_call_count + 1 > self._config.max_batch_calls:
+            self._mark_finalizing("research batch-call budget")
+            self._log_block("batch_call_budget", budget=self._config.max_batch_calls)
+            return self._blocked_result(
+                tool_call,
+                f"Research budget reached ({self._batch_call_count}/{self._config.max_batch_calls} research "
+                "calls, counting both run_research_batch and researcher-agent delegations). No further "
+                "research will run. Call get_verified_sources and submit_final_report to finalize from the "
+                "evidence already gathered; record unsupported requirements as gaps.",
+            )
+        if self._total_query_count + 1 > self._config.max_total_research_queries:
+            self._mark_finalizing("total delegated-query budget")
+            self._log_block("total_query_budget", budget=self._config.max_total_research_queries)
+            return self._blocked_result(
+                tool_call,
+                f"Delegated-query budget reached ({self._config.max_total_research_queries} queries for this "
+                "request). The delegation was not run. Call get_verified_sources and submit_final_report to "
+                "finalize from the evidence already gathered; record unsupported requirements as gaps.",
+            )
+
+        self._batch_call_count += 1
+        self._total_query_count += 1
+        logger.info(
+            "Autonomous loop guard: request=%s research=%d/%d (researcher-agent delegation) queries=%d/%d turns=%d",
+            self._request_tag,
+            self._batch_call_count,
+            self._config.max_batch_calls,
+            self._total_query_count,
+            self._config.max_total_research_queries,
+            self._model_turn_count,
+        )
+        return await handler(request)
+
+    def _clamp_high_depth(self, queries: list[object]) -> tuple[list[object], int, int]:
+        """Clamp ``high``-depth queries past the request allowance down to ``medium``.
+
+        Returns the (possibly rewritten) query list, how many ``high`` queries this batch keeps,
+        and how many were clamped. Deliberately pure with respect to ``self``: the running count
+        is committed only once the batch is admitted, so a batch rejected by a later check does
+        not silently consume the allowance.
+
+        Clamping rather than rejecting is the point. ``high`` was declared on 42% of delegated
+        queries with no aggregate F1 return, so the cost is real, but rejecting a batch over it
+        would discard four good queries to correct one and spend a model turn saying so.
+
+        Clamping is invisible to duplicate detection by design:
+        ``_canonical_request_query_signature`` excludes ``depth``, so a rewritten query still
+        hashes to the same value as its unclamped self. An earlier version signed the clamped
+        query with ``depth`` included, which let the same ``high`` question re-run in a later
+        batch as a "new" ``medium`` one — the clamp silently became a duplicate bypass.
+        """
+        allowance = self._config.max_high_depth_queries - self._high_depth_query_count
+        kept = 0
+        clamped = 0
+        result: list[object] = []
+        for query in queries:
+            # Queries arrive as raw tool-call args (dicts) at middleware time; anything else is a
+            # shape we do not recognize and must pass through untouched.
+            if not isinstance(query, dict) or query.get("depth") != "high":
+                result.append(query)
+                continue
+            if kept < allowance:
+                kept += 1
+                result.append(query)
+                continue
+            result.append({**query, "depth": "medium"})
+            clamped += 1
+        return result, kept, clamped
+
+    async def _guard_research_batch(self, tool_call, request, handler):
+        """Enforce request-wide batch, query, and duplicate budgets before a batch runs."""
         if self._phase != "active":
             self._log_block("already_finalizing")
             return self._blocked_result(
@@ -709,7 +1014,10 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
                 "components as explicit gaps.",
             )
 
-        queries = self._extract_queries(tool_call)
+        # Clamp order is not load-bearing for duplicate detection: the request-wide signature
+        # excludes ``depth`` precisely so that clamping cannot change it (see
+        # _canonical_request_query_signature).
+        queries, high_kept, high_clamped = self._clamp_high_depth(self._extract_queries(tool_call))
         incoming = len(queries)
 
         # --- Count and check BEFORE awaiting the handler so concurrent batch calls in one turn
@@ -736,31 +1044,53 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
                 "evidence already gathered; record unsupported requirements as gaps.",
             )
 
-        signatures = [_canonical_research_query_signature(q) for q in queries]
+        # Count occurrences within this batch as well as against earlier batches. Checking the
+        # whole list against the committed ledger first, and only then incrementing, let a batch
+        # carrying the same query twice through: neither copy had been recorded yet when the
+        # other was checked. Fanning two workers at one question is the exact waste this guards.
+        signatures = [_canonical_request_query_signature(q) for q in queries]
+        seen_in_batch: dict[str, int] = {}
         for signature in signatures:
-            if self._query_signature_counts.get(signature, 0) >= self._config.max_identical_research_queries:
+            already_run = self._query_signature_counts.get(signature, 0) + seen_in_batch.get(signature, 0)
+            if already_run >= self._config.max_identical_research_queries:
                 self._mark_finalizing("repeated delegated-query signature")
                 self._log_block("duplicate_query", signature=signature)
                 return self._blocked_result(
                     tool_call,
-                    "Duplicate research query blocked: this request has already researched an identical query. "
-                    "Retrying the same query will not surface new evidence. Call get_verified_sources and "
+                    "Duplicate research query blocked: this batch repeats a query it already contains, or one "
+                    "this request has already researched. Asking the same question again — including at a "
+                    "greater depth — will not surface new evidence. Call get_verified_sources and "
                     "submit_final_report to finalize; if a required period or component is unavailable in the "
                     "configured sources, state it as an explicit evidence gap instead of searching again.",
                 )
+            seen_in_batch[signature] = seen_in_batch.get(signature, 0) + 1
 
         # Reserve the budget atomically (still before the first await).
         self._batch_call_count += 1
         self._total_query_count += incoming
+        self._high_depth_query_count += high_kept
         for signature in signatures:
             self._query_signature_counts[signature] = self._query_signature_counts.get(signature, 0) + 1
         logger.info(
-            "Autonomous loop guard: request=%s batch=%d/%d queries=%d/%d turns=%d",
+            "Autonomous loop guard: request=%s batch=%d/%d queries=%d/%d high_depth=%d/%d turns=%d",
             self._request_tag,
             self._batch_call_count,
             self._config.max_batch_calls,
             self._total_query_count,
             self._config.max_total_research_queries,
+            self._high_depth_query_count,
+            self._config.max_high_depth_queries,
             self._model_turn_count,
         )
+        if high_clamped:
+            logger.info(
+                "Autonomous loop guard: request=%s clamped %d query(ies) from depth=high to depth=medium "
+                "(allowance %d per request already used)",
+                self._request_tag,
+                high_clamped,
+                self._config.max_high_depth_queries,
+            )
+            args = tool_call.get("args")
+            if isinstance(args, dict):
+                request = request.override(tool_call={**tool_call, "args": {**args, "queries": queries}})
         return await handler(request)

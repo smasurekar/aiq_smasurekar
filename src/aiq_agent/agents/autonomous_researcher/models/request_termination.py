@@ -14,9 +14,16 @@ Two independent limit layers already exist and are *not* duplicated here:
    wired into the graph context unchanged.
 
 This config holds **only** what neither of those covers: how many ``run_research_batch`` calls
-one request may make, how many orchestrator model turns it may spend, how often one normalized
-query may repeat, the hard wall-clock deadline around ``ainvoke``, and the LangGraph recursion
-ceiling.
+one request may make, how many source-tool calls the **orchestrator itself** may make directly,
+how many ``depth: "high"`` queries it may commission, how many orchestrator model turns it may
+spend, how often one normalized query or direct source call may repeat, the hard wall-clock
+deadline around ``ainvoke``, and the LangGraph recursion ceiling.
+
+Layer 1 above is why the direct-call budget has to live here. ``ResearcherLoopGuardConfig`` bounds
+a *worker*, and the orchestrator is not a worker: when it calls a source tool itself, no guard
+state exists and nothing counts the call. Every one of those results also lands in the parent
+conversation and is re-sent on every later turn, so an unbounded direct-search loop is the single
+most expensive failure mode this agent has.
 
 Unlike the adaptive agent's ``AdaptiveRequestTerminationConfig`` there is no per-tier lookup and
 no ``budgets_for_tier()``: one flat budget set always applies. That is a strict improvement —
@@ -48,7 +55,43 @@ class AutonomousRequestTerminationConfig(BaseModel):
     max_batch_calls: int = Field(
         default=6,
         ge=1,
-        description="Maximum run_research_batch calls the orchestrator may make in one request.",
+        description=(
+            "Maximum research delegations the orchestrator may make in one request, counting "
+            "run_research_batch calls and task(researcher-agent) delegations against one shared "
+            "ceiling. Counting both is the change here; the number is deliberately a runaway "
+            "backstop rather than a shape control, and never bound in the 90-task job (most "
+            "batches per trial observed: 5). Research shape is steered instead by the duplicate "
+            "guard and max_direct_source_calls, which is what the runaway trials actually "
+            "violated. Reaching this ceiling ends research outright, so it is set high."
+        ),
+    )
+    max_direct_source_calls: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Maximum source-tool calls the orchestrator may make directly (outside a worker) in "
+            "one request. Direct results persist in the parent conversation and are re-sent every "
+            "turn, so this is the dominant token lever; the budget reserves them for verifying or "
+            "disambiguating something a researcher already returned."
+        ),
+    )
+    max_identical_direct_source_calls: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum executions of one normalized direct source-tool call signature in a request. "
+            "Scoped to the direct path only: re-searching a question a worker already covered is "
+            "verification, which is what the direct budget is for, and must not be blocked."
+        ),
+    )
+    max_high_depth_queries: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum ResearchQuery items that may run at depth 'high' in one request. Queries "
+            "beyond this are clamped down to 'medium' rather than rejected, so no work is lost "
+            "and no model turn is spent on a correction."
+        ),
     )
     max_total_research_queries: int = Field(
         default=DEFAULT_MAX_RESEARCH_QUERIES,

@@ -59,14 +59,20 @@ _QUERY_LOG_MAX_LENGTH = 80
 
 # Routing text, not documentation. This description is what makes the independent-unknowns path of
 # the orchestrator prompt's "Deciding what to do" section reachable, so it must stay in step with
-# prompts/orchestrator.j2. Three claims here are load-bearing and were added deliberately:
+# prompts/orchestrator.j2. Two claims here are load-bearing and were added deliberately:
 # a one-query batch is legitimate (so a single unknown goes through a worker rather than the
-# orchestrator searching directly into its own long-lived context); `high` depth is priced as
-# expensive and capped at one per request (it was declared on 42% of queries for no measurable F1
-# return); and a
-# second batch is scoped to consuming a resolved prerequisite (two-batch runs were the worst
-# scoring bucket in the eval). See
+# orchestrator searching directly into its own long-lived context), and `high` depth is priced as
+# expensive (it was declared on 42% of queries for no measurable F1 return). See
 # misc/autonomous_researcher/autonomous-orchestrator-prompt-redesign-plan.md §D3, §D6, §D7.
+#
+# NO BUDGET COUNTS HERE. A tool description is model input exactly like the system prompt, so a
+# hard-coded "ONE batch per request" or "at most one high-depth query" drifts from max_batch_calls
+# and max_high_depth_queries the same way the deleted `# Budgets` prompt section drifted — this
+# file simply hides the drift better. Ceilings belong to
+# AutonomousOrchestratorLoopGuardMiddleware, which states them when it blocks. The single
+# exception is the per-call query cap below, which is interpolated from the same
+# max_research_concurrency this tool validates against and therefore cannot drift.
+# test_bound_tool_descriptions_state_no_budget_counts fails the build if a count returns.
 #
 # Scope boundary (2026-08-18): this description owns the DELEGATION CONTRACT — what one
 # ResearchQuery must contain and what the call returns. It deliberately does NOT carry loop
@@ -77,6 +83,8 @@ _QUERY_LOG_MAX_LENGTH = 80
 # misc/autonomous_researcher/autonomous-researcher-review-feedback-analysis.md §1.
 _RESEARCH_BATCH_DESCRIPTION = """Run one or more independent research questions in parallel isolated contexts.
 
+Send 1-{max_research_concurrency} queries in one call; more than that is rejected outright.
+
 This is the normal way to research. A batch of ONE query is valid and is the right call for a single
 self-contained fact — prefer it over searching yourself, because a worker's search trail is digested
 before it reaches you instead of accumulating in your context.
@@ -85,16 +93,16 @@ Each query runs as its own worker, so nothing one worker learns can inform anoth
 cannot be written until another is answered, that is a prerequisite chain: use
 `task(subagent_type="researcher-agent", ...)` for the whole chain instead of fanning out.
 
-Issue ONE batch per request as the default. A second batch is for consuming a prerequisite you have
-now resolved — not for re-asking a question that came back thin.
+Prefer a single well-formed batch. A follow-up batch is for consuming a prerequisite this one
+resolves — not for re-asking a question that came back thin.
 
 Each `ResearchQuery` needs: `query` (full standalone context — workers cannot see your conversation,
 and a plan component id such as `latest_price_anchor` means nothing to them: spell the topic out),
 `preferred_tools` (exact source-tool names), `target_components`, a `rationale`, and a `depth`:
   - `low`    — one quick self-contained lookup (the default choice);
   - `medium` — a few corroborating searches;
-  - `high`   — iterative multi-hop, where each result informs the next search. Expensive: at most one
-               per request, and only for a genuine chain.
+  - `high`   — iterative multi-hop, where each result informs the next search. Expensive: reserve
+               it for a genuine chain, never for a question one search answers.
 
 Returns a JSON array of `ResearchNotes` and persists each note as a JSON file under `/shared/`, each
 carrying its own `evidence_judgment`; every source the workers cited is added to the verified-source
@@ -228,5 +236,7 @@ def build_autonomous_research_batch_tool(
             ensure_ascii=False,
         )
 
-    run_research_batch.description = _RESEARCH_BATCH_DESCRIPTION
+    run_research_batch.description = _RESEARCH_BATCH_DESCRIPTION.format(
+        max_research_concurrency=max_research_concurrency
+    )
     return run_research_batch

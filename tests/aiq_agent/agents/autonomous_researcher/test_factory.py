@@ -36,6 +36,7 @@ from aiq_agent.agents.autonomous_researcher.factory import build_planner_subagen
 from aiq_agent.agents.autonomous_researcher.factory import build_writer_subagent_description
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchAgentState
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchPlan
+from aiq_agent.agents.autonomous_researcher.tools.research import build_autonomous_research_batch_tool
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
@@ -342,6 +343,18 @@ class TestDelegationGuidanceLivesInDescriptions:
         assert "latest_price_anchor" in description
         assert "evidence_judgment" in description
 
+    def test_the_per_batch_query_cap_is_stated_next_to_the_schema_that_enforces_it(self, mock_llm_provider):
+        """The one ceiling worth telling the model, because exceeding it is rejected outright.
+
+        It lived in the prompt's `# Budgets` section as a hard-coded "1-5"; it now renders from the
+        same `max_research_concurrency` the tool validates against, so the two cannot drift.
+        """
+        for concurrency in (3, 7):
+            built = build_autonomous_research_batch_tool(
+                researcher_runnable=None, callbacks=[], max_research_concurrency=concurrency
+            )
+            assert f"Send 1-{concurrency} queries in one call" in built.description
+
 
 class TestOrchestratorPrompt:
     def test_carries_no_tier_artifacts(self, mock_llm_provider):
@@ -376,13 +389,43 @@ class TestOrchestratorPrompt:
         for ladder_artifact in ("opening move", "Shape A", "shape B", "Start at A", "climb"):
             assert ladder_artifact not in prompt, ladder_artifact
 
-    def test_states_the_budgets_as_numbers(self, mock_llm_provider):
-        """Budgets are prompt-only here (nothing enforces them), so assert the text carries them."""
+    def test_bound_tool_descriptions_state_no_budget_counts(self, mock_llm_provider):
+        """A tool description is model input exactly like the system prompt.
+
+        Deleting `# Budgets` from the prompt while `run_research_batch`'s description still said
+        "Issue ONE batch per request" and "`high`: at most one per request" just moved the drift
+        somewhere less visible: configuring max_batch_calls or max_high_depth_queries differently
+        recreates the mismatch the change exists to remove. The per-call query cap is the one
+        allowed number, because it is interpolated from the same max_research_concurrency the tool
+        validates against.
+        """
+        captured = _build_and_capture(mock_llm_provider)
+        forbidden = ("ONE batch per request", "at most one\n", "at most one per request", "per request")
+        for bound in captured["tools"]:
+            description = bound.description or ""
+            for claim in forbidden:
+                assert claim not in description, f"{bound.name}: {claim!r}"
+
+    def test_the_prompt_states_no_budget_numbers(self, mock_llm_provider):
+        """Budgets belong to the middleware, which enforces them and explains itself when one fires.
+
+        The prompt used to carry a `# Budgets` section stating four ceilings. Three were enforced by
+        nothing and one contradicted the config by 6x, because a prompt copy of a number cannot be
+        kept in step with the object that enforces it. The section is gone; every ceiling now lives
+        in AutonomousOrchestratorLoopGuardMiddleware and reaches the model as a blocked ToolMessage
+        or the pre-withdrawal nudge, at the moment it actually matters.
+        """
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
-        # Top-level sections are `#`; `## Budgets` would also match a bare `# Budgets` substring
-        # check, so anchor on the newline to assert the heading level as well as the section.
-        assert "\n# Budgets\n" in prompt
-        assert "at most 2 per request" in prompt
+        assert "\n# Budgets\n" not in prompt
+        for budget_claim in (
+            "at most 2 per request",
+            "one per request",
+            "2-call budget",
+            "max_batch_calls",
+            "budget reached",
+            "runtime enforces",
+        ):
+            assert budget_claim not in prompt, budget_claim
 
     def test_states_the_answer_set_contract(self, mock_llm_provider):
         """The precision fix: the answer may not enumerate rejected candidates."""
@@ -398,8 +441,11 @@ class TestOrchestratorPrompt:
         captured = _build_and_capture(mock_llm_provider)
         assert {"web_search_tool", "knowledge_search"} <= {t.name for t in captured["tools"]}
         prompt = captured["system_prompt"]
-        assert "counts against the 2-call budget" in prompt
+        # Why a direct call is expensive, and that verifying a worker's finding is a legitimate
+        # use of one rather than a duplicate. Both are judgment, not ceilings.
+        assert "for verification, never for primary research" in prompt
         assert "raw results stay in this conversation" in prompt
+        assert "is not a repeat" in prompt
 
     def test_prompt_does_not_duplicate_bound_tool_schemas(self, mock_llm_provider):
         """Every orchestrator tool is bound to the model with its name, description, and argument

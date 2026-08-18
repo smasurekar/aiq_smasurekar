@@ -121,13 +121,32 @@ functions:
     # calls indefinitely (each new researcher invocation resets the per-researcher budget), so a
     # query for evidence the sources do not hold could run for hours.
     #
-    # Values match config_adaptive_frag.yml's `deep` budgets, which is the comparable arm: the
-    # autonomous orchestrator has no tier to step down to, so it is bounded by the widest budget
-    # the adaptive agent could reach. max_total_research_queries is additionally hard-capped at 20
-    # by DeepResearchResourceLimits.
+    # max_total_research_queries and the deadlines match config_adaptive_frag.yml's `deep` budgets,
+    # which is the comparable arm: the autonomous orchestrator has no tier to step down to, so it
+    # is bounded by the widest budget the adaptive agent could reach. max_total_research_queries is
+    # additionally hard-capped at 20 by DeepResearchResourceLimits.
+    #
+    # The batch, direct-search, and high-depth ceilings below are set from measurement rather than
+    # from parity, because this orchestrator holds source tools directly and adaptive `deep` does not:
+    #   max_batch_calls: 6         a runaway backstop, not a shape control: it never bound in the
+    #                              90-task job (most batches in one trial: 5). One batch remains
+    #                              the best observed shape (F1 0.571 at the lowest token cost), but
+    #                              that is guidance for the model, not a ceiling — and reaching
+    #                              this one ends research outright. What actually bounds research
+    #                              shape is the duplicate guard plus max_direct_source_calls; the
+    #                              runaway trials were direct-search loops, not batch loops. The
+    #                              change here is that task(researcher-agent) now spends it too.
+    #   max_direct_source_calls: 2 the orchestrator made 480 direct source calls against the
+    #                              adaptive arm's 34, with single trials reaching 61 and 62; those
+    #                              results are re-sent in the parent context on every later turn.
+    #   max_high_depth_queries: 1  `high` was declared on 42% of delegated queries with no
+    #                              aggregate F1 return. Extras are clamped to `medium`, not refused.
     request_termination:
       enabled: true
       max_batch_calls: 6
+      max_direct_source_calls: 5
+      max_identical_direct_source_calls: 2
+      max_high_depth_queries: 3
       max_total_research_queries: 20
       max_orchestrator_turns: 100
       max_identical_research_queries: 1
