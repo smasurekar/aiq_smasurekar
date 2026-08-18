@@ -67,6 +67,14 @@ _QUERY_LOG_MAX_LENGTH = 80
 # second batch is scoped to consuming a resolved prerequisite (two-batch runs were the worst
 # scoring bucket in the eval). See
 # misc/autonomous_researcher/autonomous-orchestrator-prompt-redesign-plan.md §D3, §D6, §D7.
+#
+# Scope boundary (2026-08-18): this description owns the DELEGATION CONTRACT — what one
+# ResearchQuery must contain and what the call returns. It deliberately does NOT carry loop
+# control: keeping a query ledger, recovering from a thin or failed pass, and deciding whether to
+# run another pass are orchestrator behavior across turns, and live in the prompt's
+# "# The Research Loop" section. Adding either concern to the other file reintroduces the
+# duplication that section split was meant to remove. See
+# misc/autonomous_researcher/autonomous-researcher-review-feedback-analysis.md §1.
 _RESEARCH_BATCH_DESCRIPTION = """Run one or more independent research questions in parallel isolated contexts.
 
 This is the normal way to research. A batch of ONE query is valid and is the right call for a single
@@ -80,15 +88,17 @@ cannot be written until another is answered, that is a prerequisite chain: use
 Issue ONE batch per request as the default. A second batch is for consuming a prerequisite you have
 now resolved — not for re-asking a question that came back thin.
 
-Each `ResearchQuery` needs: `query` (full standalone context — workers cannot see your conversation),
+Each `ResearchQuery` needs: `query` (full standalone context — workers cannot see your conversation,
+and a plan component id such as `latest_price_anchor` means nothing to them: spell the topic out),
 `preferred_tools` (exact source-tool names), `target_components`, a `rationale`, and a `depth`:
   - `low`    — one quick self-contained lookup (the default choice);
   - `medium` — a few corroborating searches;
   - `high`   — iterative multi-hop, where each result informs the next search. Expensive: at most one
                per request, and only for a genuine chain.
 
-Returns a JSON array of `ResearchNotes` and persists each note as a JSON file under `/shared/`;
-every source the workers cited is added to the verified-source set for `get_verified_sources`."""
+Returns a JSON array of `ResearchNotes` and persists each note as a JSON file under `/shared/`, each
+carrying its own `evidence_judgment`; every source the workers cited is added to the verified-source
+set for `get_verified_sources`."""
 
 
 def _log_research_depths(queries: list[AutonomousResearchQuery]) -> None:

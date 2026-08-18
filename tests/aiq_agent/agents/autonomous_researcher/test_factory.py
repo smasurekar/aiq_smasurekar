@@ -32,6 +32,8 @@ from langchain_core.tools import tool
 from aiq_agent.agents.autonomous_researcher.agent import AutonomousResearcherAgent
 from aiq_agent.agents.autonomous_researcher.custom_middleware import AutonomousFinalReportCommitTracker
 from aiq_agent.agents.autonomous_researcher.factory import GENERAL_PURPOSE_SUBAGENT_NAME
+from aiq_agent.agents.autonomous_researcher.factory import build_planner_subagent_description
+from aiq_agent.agents.autonomous_researcher.factory import build_writer_subagent_description
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchAgentState
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchPlan
 from aiq_agent.common import LLMProvider
@@ -169,6 +171,178 @@ class TestSubagents:
             assert not any(artifact in description for artifact in TIER_ARTIFACTS), description
 
 
+class TestDelegationGuidanceLivesInDescriptions:
+    """The `# Subagents` / `# Subagent Delegation Instructions` prompt sections were folded into
+    the subagent descriptions on 2026-08-18. These tests pin the union: the prompt must no longer
+    restate the triggers, and every description must carry its own complete delegation contract.
+    """
+
+    def test_prompt_no_longer_restates_routing_or_briefs(self, mock_llm_provider):
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        for removed in (
+            "# Subagents",
+            "# Subagent Delegation Instructions",
+            "## Planner Sub-agent Delegation",
+            "## Researcher Sub-agent Delegation",
+            "## Writer Sub-agent Delegation",
+            "three or more distinct deliverables",  # planner trigger, now description-only
+            "Their order is fixed",  # set-level ordering, now distributed per description
+        ):
+            assert removed not in prompt, removed
+
+    def test_prompt_owns_the_research_loop(self, mock_llm_provider):
+        """Loop control is orchestrator behavior across turns, not delegation mechanics, so it
+        lives in the prompt. Delegation mechanics live in the tool/subagent descriptions.
+
+        The section is written in deliberately plain language and compressed to three stages; these
+        assertions pin the rules, not the phrasing, so a reword that drops a rule still fails.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "\n# The Research Loop\n" in prompt
+        for stage in ("**Each pass.**", "**If a pass comes back thin.**", "**When to stop.**"):
+            assert stage in prompt, stage
+        for rule in (
+            "Write down every query you send",  # ledger
+            "a repeat is blocked",  # why the ledger matters
+            "Read every result before deciding anything",
+            "evidence_judgment",
+            "list what the answer still needs",  # name the gaps
+            "If you cannot name what is missing, stop",
+            "Do not ask the same thing in new words",
+            "keywords, not URLs",
+            "resend only the queries that failed, never one that worked",
+            "give the whole chain to `researcher-agent` once",
+            "answer with what you have",  # honest partial beats nothing
+            "Stop once the evidence is enough",
+            "answer that part and say what is missing",
+            "same year, the same definition and the same kind of source",  # superlative check
+            "do not guess, and do not fall back to an unresearched answer",
+            "`researched=true`",
+            "call `get_verified_sources` before writing anything with citations",
+        ):
+            assert rule in prompt, rule
+
+    def test_research_loop_stays_concise(self, mock_llm_provider):
+        """It is the orchestrator's hot path, re-read on every turn, so terse beats exhaustive.
+
+        The ceiling is the size of the ``The research loop:`` list this replaced (997 chars) plus
+        headroom for the two blocks folded into it (the lookup-failure ladder and the stopping
+        rules), which previously lived elsewhere in the prompt.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        section = prompt.split("# The Research Loop", 1)[1].split("\n# ", 1)[0]
+        content_lines = [line for line in section.splitlines() if line.strip()]
+        assert len(content_lines) <= 6, f"research loop grew to {len(content_lines)} content lines"
+        assert len(section) <= 1600, f"research loop grew to {len(section)} chars"
+
+    def test_research_loop_maintainer_note_is_not_sent_to_the_model(self, mock_llm_provider):
+        """The scope boundary is a Jinja comment, so it costs zero tokens per turn."""
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "LOOP CONTROL" not in prompt
+
+    def test_prompt_signposts_task_without_restating_it(self, mock_llm_provider):
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        assert "Each subagent's entry in the `task` description is authoritative" in prompt
+
+    @pytest.mark.parametrize(
+        ("name", "required"),
+        [
+            (
+                "researcher-agent",
+                (
+                    "WHEN TO CHOOSE IT",
+                    "SEQUENCING",
+                    "WHAT IT PRODUCES",
+                    "DELEGATION BRIEF",
+                    "PREREQUISITE CHAIN",
+                    "Already attempted, do not repeat",
+                ),
+            ),
+            (
+                "planner-agent",
+                (
+                    "WHEN TO CHOOSE IT",
+                    "SEQUENCING",
+                    "WHAT IT PRODUCES",
+                    "DELEGATION BRIEF",
+                    "three or more distinct deliverables",
+                    "runs FIRST, or not at all",
+                    "Create a research plan for the following user request",
+                ),
+            ),
+            (
+                "writer-agent",
+                (
+                    "WHEN TO CHOOSE IT",
+                    "SEQUENCING",
+                    "WHAT IT PRODUCES",
+                    "DELEGATION BRIEF",
+                    "runs LAST",
+                    "do NOT call submit_final_report",
+                    "Write the final Markdown answer to /shared/output.md",
+                ),
+            ),
+        ],
+    )
+    def test_each_description_carries_the_full_contract(self, mock_llm_provider, name, required):
+        specs = _build_and_capture(mock_llm_provider)["subagents"]
+        description = next(s for s in specs if s["name"] == name)["description"]
+        for fragment in required:
+            assert fragment in description, f"{name} lost: {fragment}"
+
+    def test_multiline_descriptions_stay_inside_their_own_bullet(self, mock_llm_provider):
+        """deepagents renders descriptions as `f"- {name}: {description}"` in both the task tool
+        description and the system prompt. That assumes one line; without indentation every
+        continuation line escapes to column 0 and visually merges with the NEXT agent's entry, so
+        writer-agent's delegation brief can read as part of planner-agent.
+        """
+        specs = _build_and_capture(mock_llm_provider)["subagents"]
+        rendered = "\n".join(f"- {spec['name']}: {spec['description']}" for spec in specs)
+        escaped = [
+            line
+            for line in rendered.splitlines()
+            if line.strip() and not line.startswith("- ") and not line.startswith("  ")
+        ]
+        assert not escaped, f"{len(escaped)} description line(s) escaped their bullet: {escaped[:2]}"
+        assert len([line for line in rendered.splitlines() if line.startswith("- ")]) == len(specs)
+
+    def test_writer_brief_omits_chart_rules_when_execution_is_disabled(self, mock_llm_provider):
+        """Briefing the writer on artifacts it cannot produce is how the old prompt's
+        `execution_enabled` conditional earned its keep; the description must preserve it."""
+        with_exec = build_writer_subagent_description(parent_report_context_available=False, execution_enabled=True)
+        without_exec = build_writer_subagent_description(parent_report_context_available=False, execution_enabled=False)
+        assert "artifact://" in with_exec
+        assert "artifact://" not in without_exec
+
+    def test_planner_and_writer_briefs_gate_on_parent_report(self):
+        planner_plain = build_planner_subagent_description(parent_report_context_available=False)
+        planner_delta = build_planner_subagent_description(parent_report_context_available=True)
+        assert "parent-report revision" not in planner_plain
+        assert "parent-report revision" in planner_delta
+
+        writer_plain = build_writer_subagent_description(parent_report_context_available=False, execution_enabled=False)
+        writer_delta = build_writer_subagent_description(parent_report_context_available=True, execution_enabled=False)
+        assert "original_report.md" not in writer_plain
+        assert "original_report.md" in writer_delta
+
+    def test_delta_mode_overrides_the_writer_length_test(self):
+        """In delta mode the writer is mandatory: preserved parent citations only stay verifiable
+        through the writer path, which contradicts the default "only for long deliverables" rule.
+        """
+        delta = build_writer_subagent_description(parent_report_context_available=True, execution_enabled=False)
+        assert "REQUIRED when a parent report is mounted" in delta
+
+    def test_research_batch_description_owns_the_delegation_contract(self, mock_llm_provider):
+        """What one ResearchQuery must contain, and what the call returns — nothing about looping."""
+        tools = {t.name: t for t in _build_and_capture(mock_llm_provider)["tools"]}
+        description = tools["run_research_batch"].description
+        for field in ("preferred_tools", "target_components", "rationale", "depth"):
+            assert field in description, field
+        # A plan component id is not a topic; the worker cannot resolve one.
+        assert "latest_price_anchor" in description
+        assert "evidence_judgment" in description
+
+
 class TestOrchestratorPrompt:
     def test_carries_no_tier_artifacts(self, mock_llm_provider):
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
@@ -216,21 +390,46 @@ class TestOrchestratorPrompt:
         assert "What goes in the answer" in prompt
         assert "only qualifying members" in prompt
 
-    def test_lists_source_tools_as_callable_but_budgeted(self, mock_llm_provider):
-        """Source tools stay in the orchestrator's hands; the prompt demotes them to verification."""
-        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
-        assert "web_search_tool" in prompt
-        assert "2-call verification budget" in prompt
+    def test_source_tools_are_held_directly_but_demoted_to_verification(self, mock_llm_provider):
+        """Source tools stay in the orchestrator's hands, and the prompt demotes them to
+        verification without re-listing them: the names and descriptions reach the model through
+        `bind_tools`, so the prompt only has to say how to use them.
+        """
+        captured = _build_and_capture(mock_llm_provider)
+        assert {"web_search_tool", "knowledge_search"} <= {t.name for t in captured["tools"]}
+        prompt = captured["system_prompt"]
+        assert "counts against the 2-call budget" in prompt
+        assert "raw results stay in this conversation" in prompt
+
+    def test_prompt_does_not_duplicate_bound_tool_schemas(self, mock_llm_provider):
+        """Every orchestrator tool is bound to the model with its name, description, and argument
+        schema. Rendering name+description into the prompt too was a verbatim second copy of ~3.9k
+        characters per turn, and the prompt half could not be withdrawn when the loop guard
+        withdraws a tool. `task`, `write_todos`, and the filesystem tools were always schema-only.
+        """
+        captured = _build_and_capture(mock_llm_provider)
+        prompt = captured["system_prompt"]
+        assert "## Your Tools (callable)" not in prompt
+        assert "## Retrieval Tools" not in prompt
+        for bound in captured["tools"]:
+            description = (bound.description or "").strip()
+            if len(description) > 40:
+                assert description not in prompt, f"{bound.name} description duplicated into prompt"
 
     def test_delta_block_requires_planner_before_writer(self, mock_llm_provider):
+        """The prompt still frames delta mode; the per-agent briefs now live in the descriptions."""
         state = AutonomousResearchAgentState(
             messages=[HumanMessage(content="follow up")],
             files={"/shared/original_report.md": {"content": "# parent"}},
         )
-        prompt = _build_and_capture(mock_llm_provider, state=state)["system_prompt"]
+        captured = _build_and_capture(mock_llm_provider, state=state)
+        prompt = captured["system_prompt"]
         assert "Parent-report delta" in prompt
         assert "planner-agent" in prompt
-        assert "complete standalone revised report" in prompt
+        # The revised-report contract itself moved into writer-agent's delegation brief, which is
+        # only rendered when a parent report is actually mounted.
+        writer = next(s for s in captured["subagents"] if s["name"] == "writer-agent")
+        assert "complete standalone revised report" in writer["description"]
 
     def test_delta_block_absent_without_parent_context(self, mock_llm_provider):
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
