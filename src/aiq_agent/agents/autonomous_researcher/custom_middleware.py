@@ -82,6 +82,7 @@ from aiq_agent.agents.deep_researcher.custom_middleware import _request_tool_nam
 from .models import AutonomousRequestTerminationConfig
 from .models import ResearchNotes
 from .tools.finalize import FINAL_REPORT_PATH as INLINE_FINAL_REPORT_PATH
+from .tools.finalize import commit_final_report
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ FINALIZE_TOOL = "submit_final_report"
 PLANNER_SUBAGENT = "planner-agent"
 RESEARCHER_SUBAGENT = "researcher-agent"
 WRITER_SUBAGENT = "writer-agent"
+SHALLOW_SUBAGENT = "shallow-researcher"
 PLAN_PATH = "/shared/plan.json"
 
 # Argument names of the DeepAgents ``task`` tool (``TaskToolSchema``).
@@ -476,6 +478,139 @@ class PlanBeforeWriterMiddleware(AgentMiddleware):
                 self._plan_seen = True
                 logger.info("Planner run completed; writer delegation is now permitted")
         return result
+
+
+# =================================================================================================
+# Shallow-researcher auto-finalization
+# =================================================================================================
+
+
+class ShallowFinalizationMiddleware(AgentMiddleware):
+    """End the run on a successful ``shallow-researcher`` delegation, with no further model turn.
+
+    The shallow researcher is not a research *worker* that hands notes back for someone else to
+    synthesize — it produces the finished, cited, user-facing answer. Routing that answer back to
+    the orchestrator so it can re-emit it through ``submit_final_report`` costs a full model turn
+    that can only degrade it, so this middleware commits the report and jumps straight to the end
+    of the graph.
+
+    Two hooks, in the order they fire:
+
+    1. ``awrap_tool_call`` — after a ``task(subagent_type="shallow-researcher")`` call returns,
+       and only when the capture holds a completed report, commit that report through
+       :func:`commit_final_report` (the same seam ``submit_final_report`` uses) and promote the
+       shallow run's sources into the compact citation set.
+    2. ``before_model`` — declared ``can_jump_to=["end"]``. On the very next graph hop it returns
+       ``{"jump_to": "end"}``, so the model node never executes. Jumping from ``before_model``
+       rather than ``after_model`` is what makes this genuinely zero-turn.
+
+    **Failure is the escalation path, and it is deliberately the only one.** When the shallow run
+    errors, returns empty markdown, or captures no sources, the capture never reaches
+    ``has_report``: nothing is committed, no jump is armed, and the orchestrator simply receives
+    the adapter's failure notice and continues with its full menu of research tools. The
+    corollary is that a *successful* shallow report is never reviewed by the orchestrator — that
+    is the intended trade, not an oversight.
+
+    Note that this is the first ``before_model`` hook in the orchestrator stack, which makes this
+    middleware's node the graph's loop entry point. That is a supported composition (LangChain
+    routes ``tools`` back to the first ``before_model`` node instead of directly to ``model``),
+    and the hook is a cheap no-op on every turn that has not finalized.
+    """
+
+    def __init__(
+        self,
+        *,
+        capture: Any,
+        backend: Any | None = None,
+        tracker: Any | None = None,
+        source_registry_middleware: Any | None = None,
+    ) -> None:
+        """Store the run-scoped capture and the seams used to commit its report.
+
+        Args:
+            capture: The run's ``ShallowSubagentCapture``. Typed loosely so this module stays
+                importable without the ``subagents`` package, matching the convention used for the
+                other duck-typed collaborators here.
+            backend: The run's shared filesystem backend, forwarded to ``commit_final_report``.
+            tracker: The run's :class:`AutonomousFinalReportCommitTracker`.
+            source_registry_middleware: Parent source registry, used to promote the shallow run's
+                sources into the compact writer-facing set.
+        """
+        super().__init__()
+        self._capture = capture
+        self._backend = backend
+        self._tracker = tracker
+        self._source_registry_middleware = source_registry_middleware
+        self._finalized = False
+
+    @property
+    def finalized(self) -> bool:
+        """Whether a shallow report has been committed and the end-jump is armed."""
+        return self._finalized
+
+    def _promote_shallow_sources(self) -> None:
+        """Expose the shallow run's captured sources in the compact citation set.
+
+        On a shallow-only run this is a no-op in effect: ``get_source_entries("compact")`` already
+        falls back to the full registry while no compact keys exist. It matters on the escalation
+        path, where a later ``run_research_batch`` registers research-note locators as compact
+        keys — at which point an unpromoted shallow source would be filtered out of the very list
+        the answer cites.
+        """
+        if self._source_registry_middleware is None:
+            return
+        try:
+            registry = self._source_registry_middleware.active_registry()
+            self._source_registry_middleware.register_compact_sources(list(registry.all_sources()))
+        except Exception as exc:  # noqa: BLE001 - citation bookkeeping must not fail a good report
+            logger.warning("Could not promote shallow-researcher sources (%s)", type(exc).__name__)
+
+    async def awrap_tool_call(self, request, handler):
+        """Commit the shallow report once the delegation returns with one."""
+        tool_call = getattr(request, "tool_call", None)
+        if not isinstance(tool_call, dict) or tool_call.get("name") != TASK_TOOL:
+            return await handler(request)
+        args = tool_call.get("args")
+        if not isinstance(args, dict) or args.get(_SUBAGENT_TYPE_ARG) != SHALLOW_SUBAGENT:
+            return await handler(request)
+
+        # The result is returned untouched. The `task` tool answers with a Command carrying the
+        # sub-agent's state update, including the `files` write of /shared/final_report.md;
+        # replacing it with a plain ToolMessage would drop that update.
+        result = await handler(request)
+
+        if self._finalized or not getattr(self._capture, "has_report", False):
+            return result
+
+        self._promote_shallow_sources()
+        try:
+            commit_final_report(
+                backend=self._backend,
+                tracker=self._tracker,
+                markdown=self._capture.markdown,
+                researched=bool(getattr(self._capture, "researched", True)),
+                source=SHALLOW_SUBAGENT,
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to an ordinary orchestrator turn
+            # The report is still in the parent's `files` channel via the sub-agent's state
+            # update, so the run remains recoverable — but without a committed exit the model must
+            # be allowed to finish normally, so the jump stays disarmed.
+            logger.warning(
+                "Could not commit the shallow-researcher report (%s); leaving the run to the orchestrator",
+                type(exc).__name__,
+            )
+            return result
+
+        self._finalized = True
+        return result
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):  # noqa: ARG002 - hook signature
+        """End the run immediately once a shallow report has been committed."""
+        if not self._finalized:
+            return None
+        logger.info("Ending the run on the committed shallow-researcher report (no further model turn)")
+        return {"jump_to": "end"}
 
 
 # =================================================================================================

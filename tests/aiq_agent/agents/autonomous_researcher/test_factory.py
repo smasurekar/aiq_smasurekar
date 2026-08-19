@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from deepagents.backends.state import create_file_data
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -41,13 +42,18 @@ from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 
 # Strings that would prove some part of the tier machinery leaked into this agent.
+#
+# "shallow-researcher" is deliberately NOT here. The sub-agent of that name is a first-class
+# delegation route in this agent, reached by description like every other one — what it is not is
+# the adaptive arm's tier-gated, middleware-forced `single_shot` route. The tier vocabulary that
+# would prove that machinery came with it ("single_shot", "declare_effort_tier", ...) is still
+# listed, so a genuine leak still fails.
 TIER_ARTIFACTS = (
     "declare_effort_tier",
     "effort tier",
     "Effort Levels",
     "Choosing Effort",
     "single_shot",
-    "shallow-researcher",
     "source-router-agent",
     "enabled_tiers",
 )
@@ -107,6 +113,115 @@ def _middleware_names(captured: dict) -> list[str]:
     return [type(m).__name__ for m in captured["middleware"]]
 
 
+def _build_run(mock_llm_provider, *, state=None, tools=None, **agent_kwargs):
+    """Build the graph and return the ``AutonomousResearchGraphRun`` wrapper itself."""
+    graph = MagicMock()
+    graph.with_config = MagicMock(return_value=graph)
+    with (
+        patch("aiq_agent.agents.autonomous_researcher.factory.create_deep_agent", return_value=graph),
+        patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph),
+        patch(
+            "aiq_agent.agents.deep_researcher.factory.create_summarization_middleware",
+            return_value=_FakeSummarizationMiddleware(),
+        ),
+    ):
+        agent = AutonomousResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=tools if tools is not None else [web_search_tool, knowledge_search],
+            **agent_kwargs,
+        )
+        state = state or AutonomousResearchAgentState(messages=[HumanMessage(content="q")])
+        return agent._build_orchestrator_agent(state, AutonomousFinalReportCommitTracker())
+
+
+def _delta_state() -> AutonomousResearchAgentState:
+    """A state with a parent report mounted, which must suppress the shallow sub-agent."""
+    return AutonomousResearchAgentState(
+        messages=[HumanMessage(content="revise it")],
+        files={"/shared/original_report.md": create_file_data("# Parent report")},
+    )
+
+
+class TestShallowSubagentWiring:
+    """The shallow sub-agent is opt-out, delta-suppressed, and hands back a run-scoped capture."""
+
+    def test_present_by_default(self, mock_llm_provider):
+        names = [s["name"] for s in _build_and_capture(mock_llm_provider)["subagents"]]
+        assert "shallow-researcher" in names
+
+    def test_absent_when_disabled(self, mock_llm_provider):
+        captured = _build_and_capture(mock_llm_provider, shallow_subagent=False)
+        assert "shallow-researcher" not in [s["name"] for s in captured["subagents"]]
+        assert "ShallowFinalizationMiddleware" not in _middleware_names(captured)
+        assert _build_run(mock_llm_provider, shallow_subagent=False).shallow_capture is None
+
+    def test_absent_for_a_parent_report_delta(self, mock_llm_provider):
+        """A delta must keep the planner -> research -> writer path: it is the only one that
+        carries preserved parent citations through in a verifiable form."""
+        captured = _build_and_capture(mock_llm_provider, state=_delta_state())
+        assert "shallow-researcher" not in [s["name"] for s in captured["subagents"]]
+        assert "ShallowFinalizationMiddleware" not in _middleware_names(captured)
+
+    def test_finalization_middleware_shares_the_returned_capture(self, mock_llm_provider):
+        """One object: the adapter writes it, the middleware reads it, agent.run() cancels it."""
+        graph = MagicMock()
+        graph.with_config = MagicMock(return_value=graph)
+        with (
+            patch("aiq_agent.agents.autonomous_researcher.factory.create_deep_agent", return_value=graph) as create,
+            patch("aiq_agent.agents.deep_researcher.factory.create_agent", return_value=graph),
+            patch(
+                "aiq_agent.agents.deep_researcher.factory.create_summarization_middleware",
+                return_value=_FakeSummarizationMiddleware(),
+            ),
+        ):
+            agent = AutonomousResearcherAgent(
+                llm_provider=mock_llm_provider,
+                tools=[web_search_tool, knowledge_search],
+            )
+            state = AutonomousResearchAgentState(messages=[HumanMessage(content="q")])
+            built = agent._build_orchestrator_agent(state, AutonomousFinalReportCommitTracker())
+
+        guard = next(
+            m for m in create.call_args.kwargs["middleware"] if type(m).__name__ == "ShallowFinalizationMiddleware"
+        )
+        assert built.shallow_capture is not None
+        assert guard._capture is built.shallow_capture
+
+    def test_the_shallow_agent_receives_the_raw_tool_list(self, mock_llm_provider):
+        """Not tool_set.researcher_tools: it must run exactly as it does standalone."""
+        with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
+            _build_and_capture(mock_llm_provider)
+        passed = [t.name for t in shallow_cls.call_args.kwargs["tools"]]
+        assert passed == ["web_search_tool", "knowledge_search"]
+        assert "get_verified_sources" not in passed
+
+    def test_loop_bounds_are_forwarded(self, mock_llm_provider):
+        with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
+            _build_and_capture(
+                mock_llm_provider,
+                shallow_subagent_max_llm_turns=3,
+                shallow_subagent_max_tool_iterations=2,
+            )
+        assert shallow_cls.call_args.kwargs["max_llm_turns"] == 3
+        assert shallow_cls.call_args.kwargs["max_tool_iterations"] == 2
+
+    def test_description_states_the_first_once_and_terminal_contract(self, mock_llm_provider):
+        """These three rules have no runtime enforcement, so the text is the only thing carrying
+        them. Assertions pin the rules, not the phrasing."""
+        spec = next(s for s in _build_and_capture(mock_llm_provider)["subagents"] if s["name"] == "shallow-researcher")
+        description = spec["description"]
+        assert "FIRST, or not at all" in description
+        assert "ONCE" in description
+        assert "do NOT call submit_final_report" in description
+        assert "run_research_batch" in description, "the failure/escalation route must be named"
+
+    def test_description_survives_the_list_rendering(self, mock_llm_provider):
+        """deepagents renders `- {name}: {description}`; unindented lines escape the bullet."""
+        spec = next(s for s in _build_and_capture(mock_llm_provider)["subagents"] if s["name"] == "shallow-researcher")
+        continuation = spec["description"].split("\n", 1)[1]
+        assert all(not line or line.startswith("  ") for line in continuation.splitlines())
+
+
 class TestOrchestratorTools:
     """The orchestrator holds the full menu, unconditionally."""
 
@@ -128,11 +243,22 @@ class TestOrchestratorTools:
 
 
 class TestSubagents:
-    """`task` must advertise exactly three usable delegation routes."""
+    """`task` must advertise exactly four usable delegation routes."""
 
-    def test_exactly_researcher_planner_writer_plus_inert_stub(self, mock_llm_provider):
+    def test_exactly_shallow_researcher_planner_writer_plus_inert_stub(self, mock_llm_provider):
+        """Order is part of the contract: shallow-researcher renders first in the `task` listing.
+
+        Its description says "FIRST, or not at all"; putting it first in the rendered menu is free
+        reinforcement of that, since deepagents renders the specs in list order.
+        """
         names = [s["name"] for s in _build_and_capture(mock_llm_provider)["subagents"]]
-        assert names == ["researcher-agent", "planner-agent", "writer-agent", GENERAL_PURPOSE_SUBAGENT_NAME]
+        assert names == [
+            "shallow-researcher",
+            "researcher-agent",
+            "planner-agent",
+            "writer-agent",
+            GENERAL_PURPOSE_SUBAGENT_NAME,
+        ]
 
     def test_source_router_subagent_is_never_built(self, mock_llm_provider):
         names = [s["name"] for s in _build_and_capture(mock_llm_provider)["subagents"]]

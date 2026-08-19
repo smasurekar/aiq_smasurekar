@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from deepagents.backends.state import create_file_data
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphRecursionError
@@ -56,12 +57,16 @@ from aiq_agent.common.citation_verification import source_entries_from_parent_co
 from aiq_agent.common.citation_verification import verify_citations
 
 from .custom_middleware import AutonomousFinalReportCommitTracker
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS
+from .factory import AutonomousResearchGraphRun
 from .factory import build_autonomous_research_graph
 from .factory import build_autonomous_research_middleware_set
 from .factory import build_autonomous_research_tool_set
 from .models import AutonomousRequestTerminationConfig
 from .models import AutonomousResearchAgentState
 from .models import ResearcherLoopGuardConfig
+from .subagents import ShallowSubagentCapture
 from .tools.finalize import FINAL_REPORT_META_PATH
 from .tools.finalize import FINAL_REPORT_PATH
 
@@ -104,6 +109,9 @@ class AutonomousResearcherAgent:
         max_research_concurrency: int = DEFAULT_MAX_RESEARCH_CONCURRENCY,
         max_concurrent_source_tool_calls: int = DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS,
         max_source_tool_batch_size: int = DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE,
+        shallow_subagent: bool = True,
+        shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
+        shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
     ) -> None:
         """Initialize the autonomous researcher agent.
 
@@ -130,6 +138,11 @@ class AutonomousResearcherAgent:
             max_concurrent_source_tool_calls: Shared source-tool concurrency limit across
                 researcher workers.
             max_source_tool_batch_size: Maximum concrete inputs per batch-capable source tool call.
+            shallow_subagent: Offer the ``shallow-researcher`` sub-agent, which answers an easy
+                request end to end and whose report finishes the run without a further
+                orchestrator turn. Automatically suppressed for parent-report deltas.
+            shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-run.
+            shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-run.
         """
         self.llm_provider = llm_provider
         self.tools = list(tools) if tools else []
@@ -138,6 +151,9 @@ class AutonomousResearcherAgent:
         self.max_research_concurrency = max_research_concurrency
         self.max_concurrent_source_tool_calls = max_concurrent_source_tool_calls
         self.max_source_tool_batch_size = max_source_tool_batch_size
+        self.shallow_subagent = shallow_subagent
+        self.shallow_subagent_max_llm_turns = shallow_subagent_max_llm_turns
+        self.shallow_subagent_max_tool_iterations = shallow_subagent_max_tool_iterations
         self.enable_citation_verification = enable_citation_verification
         self.researcher_loop_guard = researcher_loop_guard or ResearcherLoopGuardConfig()
         self.request_termination = request_termination or AutonomousRequestTerminationConfig()
@@ -212,8 +228,13 @@ class AutonomousResearcherAgent:
         self,
         state: AutonomousResearchAgentState,
         tracker: AutonomousFinalReportCommitTracker,
-    ) -> Any:
-        """Build the orchestrator graph for one run, bound to that run's dual-exit tracker."""
+    ) -> AutonomousResearchGraphRun:
+        """Build the orchestrator graph for one run, bound to that run's dual-exit tracker.
+
+        Returns the run wrapper rather than the bare runnable because the shallow sub-agent's
+        capture is not reachable from graph state on the two paths that need it: teardown
+        cancellation and post-exception report recovery.
+        """
         return build_autonomous_research_graph(
             llm_provider=self.llm_provider,
             state=state,
@@ -228,6 +249,9 @@ class AutonomousResearcherAgent:
             max_research_concurrency=self.max_research_concurrency,
             researcher_loop_guard=self.researcher_loop_guard,
             request_termination=self.request_termination,
+            shallow_subagent=self.shallow_subagent,
+            shallow_subagent_max_llm_turns=self.shallow_subagent_max_llm_turns,
+            shallow_subagent_max_tool_iterations=self.shallow_subagent_max_tool_iterations,
         )
 
     @staticmethod
@@ -439,6 +463,36 @@ class AutonomousResearcherAgent:
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _state_with_completed_shallow_capture(
+        state: AutonomousResearchAgentState,
+        capture: ShallowSubagentCapture | None,
+    ) -> AutonomousResearchAgentState:
+        """Return ``state`` with the shallow report merged in, when one is safely reusable.
+
+        Reached only from the timeout / recursion handlers. On those paths ``ainvoke`` raised, so
+        the sub-agent's ``files`` update — which reaches the caller on a normal completion — is
+        unavailable, and the run-scoped capture is the only way to recover a report the shallow
+        researcher already finished producing. Without this, a run whose only remaining work was
+        to end would return a deterministic partial instead of the answer it already had.
+
+        ``ShallowFinalizationMiddleware`` normally commits the report through the backend before
+        the run ends, so this path is reached only when the deadline landed in the narrow window
+        between the sub-agent completing and that commit — or when the commit itself failed.
+        """
+        if capture is None or not capture.has_report:
+            return state
+        logger.info(
+            "Recovering the completed shallow-researcher report (%d characters) after a forced exit",
+            len(capture.markdown),
+        )
+        files = {
+            **state.files,
+            FINAL_REPORT_PATH: create_file_data(capture.markdown),
+            FINAL_REPORT_META_PATH: create_file_data(json.dumps({"researched": capture.researched})),
+        }
+        return state.model_copy(update={"files": files})
+
     def _build_partial_result(
         self, state: AutonomousResearchAgentState, *, reason: str
     ) -> AutonomousResearchAgentState:
@@ -499,7 +553,8 @@ class AutonomousResearcherAgent:
         # One tracker per request. Both exits record onto it: the writer through the upstream
         # FinalReportCommitMiddleware, and submit_final_report through its inline digest.
         final_report_tracker = AutonomousFinalReportCommitTracker()
-        runnable = self._build_orchestrator_agent(state, final_report_tracker)
+        built = self._build_orchestrator_agent(state, final_report_tracker)
+        runnable = built.runnable
 
         messages = state.messages
         if messages:
@@ -524,18 +579,31 @@ class AutonomousResearcherAgent:
                 "Autonomous Research exceeded the %ds workflow deadline; returning a deterministic partial result.",
                 timeout_seconds,
             )
-            return self._build_partial_result(state, reason=f"the {timeout_seconds}s workflow time limit was reached")
+            recovery_state = self._state_with_completed_shallow_capture(state, built.shallow_capture)
+            return self._build_partial_result(
+                recovery_state, reason=f"the {timeout_seconds}s workflow time limit was reached"
+            )
         except GraphRecursionError:
             logger.warning(
                 "Autonomous Research reached the graph recursion limit (%d); returning a deterministic partial result.",
                 self.request_termination.recursion_limit,
             )
-            return self._build_partial_result(state, reason="the maximum research step limit was reached")
+            recovery_state = self._state_with_completed_shallow_capture(state, built.shallow_capture)
+            return self._build_partial_result(recovery_state, reason="the maximum research step limit was reached")
         except Exception as ex:
             # Preserve observability: any other invocation failure is logged with a traceback and
             # re-raised (post-processing errors are handled by the block below).
             logger.error("Autonomous Research failed: %s", ex, exc_info=True)
             raise
+        finally:
+            # The shallow sub-agent runs in a detached asyncio task so concurrent `task` calls can
+            # share it, which means cancelling this coroutine does NOT stop it. Without this the
+            # workflow deadline would return a partial result while an orphaned shallow run kept
+            # issuing LLM and source-tool calls. Runs on every exit path — normal completion
+            # (a no-op, the task is done), timeout, recursion abort, and the CancelledError a
+            # client disconnect raises, which this method deliberately does not catch.
+            if built.shallow_capture is not None:
+                built.shallow_capture.cancel()
 
         try:
             # Resolve via the two sub-methods (not the combined extractor) so we know whether the

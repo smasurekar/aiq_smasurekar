@@ -107,6 +107,14 @@ functions:
     # Per-researcher budgets. Unchanged from config_adaptive_frag.yml: `depth` is a per-query
     # knob, not an effort tier, so it carries over to the autonomous agent as-is. These bound one
     # run_research_batch worker; the request-wide envelope below bounds the whole request.
+    # Shallow-researcher sub-agent: for a request one agent can finish end to end, it produces
+    # the finished cited answer in a single bounded run and the runtime ends the request on it —
+    # no orchestrator composition turn, no run_research_batch round trip. It is offered as the
+    # first entry in `task`; nothing forces the model to it, and nothing hides it afterwards.
+    # Set to false for the A/B arm that compares against the four-subagent baseline.
+    shallow_subagent: true
+    shallow_subagent_max_tool_iterations: 5
+    shallow_subagent_max_llm_turns: 10
     researcher_loop_guard:
       enabled: true
       source_call_budgets:
