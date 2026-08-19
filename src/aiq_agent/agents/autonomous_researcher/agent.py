@@ -112,6 +112,8 @@ class AutonomousResearcherAgent:
         shallow_subagent: bool = True,
         shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
         shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+        shallow_subagent_tools: Sequence[str] | None = None,
+        shallow_subagent_exclude_tools: Sequence[str] | None = None,
     ) -> None:
         """Initialize the autonomous researcher agent.
 
@@ -143,6 +145,11 @@ class AutonomousResearcherAgent:
                 orchestrator turn. Automatically suppressed for parent-report deltas.
             shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-run.
             shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-run.
+            shallow_subagent_tools: Tool names the shallow sub-run may use. ``None``/empty keeps
+                the agent's full tool set. Narrows the sub-run only; the orchestrator and the
+                other subagents are unaffected.
+            shallow_subagent_exclude_tools: Tool names withheld from the shallow sub-run only,
+                applied after ``shallow_subagent_tools``.
         """
         self.llm_provider = llm_provider
         self.tools = list(tools) if tools else []
@@ -154,6 +161,8 @@ class AutonomousResearcherAgent:
         self.shallow_subagent = shallow_subagent
         self.shallow_subagent_max_llm_turns = shallow_subagent_max_llm_turns
         self.shallow_subagent_max_tool_iterations = shallow_subagent_max_tool_iterations
+        self.shallow_subagent_tools = list(shallow_subagent_tools or [])
+        self.shallow_subagent_exclude_tools = list(shallow_subagent_exclude_tools or [])
         self.enable_citation_verification = enable_citation_verification
         self.researcher_loop_guard = researcher_loop_guard or ResearcherLoopGuardConfig()
         self.request_termination = request_termination or AutonomousRequestTerminationConfig()
@@ -252,6 +261,8 @@ class AutonomousResearcherAgent:
             shallow_subagent=self.shallow_subagent,
             shallow_subagent_max_llm_turns=self.shallow_subagent_max_llm_turns,
             shallow_subagent_max_tool_iterations=self.shallow_subagent_max_tool_iterations,
+            shallow_subagent_tools=self.shallow_subagent_tools,
+            shallow_subagent_exclude_tools=self.shallow_subagent_exclude_tools,
         )
 
     @staticmethod

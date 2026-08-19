@@ -607,6 +607,52 @@ def build_autonomous_subagents(
     return subagents
 
 
+def _shallow_subagent_tools(
+    tools: Sequence[BaseTool],
+    allowed: Sequence[str] | None,
+    excluded: Sequence[str] | None,
+) -> list[BaseTool]:
+    """Narrow ``tools`` to the set the shallow sub-run may use.
+
+    Applied to the request's already-resolved tools, so it composes with the ``data_sources``
+    filter rather than fighting it: a tool the request never selected cannot be re-added here.
+
+    Falls back to the unnarrowed list when the result would be empty. A shallow agent with no
+    tools does not fail loudly - it answers the question from memory, which is the one outcome
+    this whole path exists to prevent - so a config that over-narrows for a given request is
+    better served by a warning and full retrieval than by a confidently uncited answer. Names
+    are validated against the agent's tool set at startup (``register.py``), so reaching this
+    branch means the request's ``data_sources`` excluded them, not that they were misspelt.
+    """
+    allow, deny = set(allowed or []), set(excluded or [])
+    if not allow and not deny:
+        return list(tools)
+
+    selected = [
+        tool
+        for tool in tools
+        if (not allow or getattr(tool, "name", "") in allow) and getattr(tool, "name", "") not in deny
+    ]
+    if not selected:
+        logger.warning(
+            "Shallow sub-agent tool narrowing removed every tool for this request; "
+            "falling back to the full tool set (allowed=%s excluded=%s available=%s)",
+            sorted(allow),
+            sorted(deny),
+            sorted(getattr(t, "name", "") for t in tools),
+        )
+        return list(tools)
+
+    if len(selected) != len(tools):
+        logger.info(
+            "Shallow sub-agent restricted to %d of %d tool(s): %s",
+            len(selected),
+            len(tools),
+            ", ".join(sorted(getattr(t, "name", "") for t in selected)),
+        )
+    return selected
+
+
 def build_autonomous_research_graph(
     *,
     llm_provider: LLMProvider,
@@ -627,6 +673,8 @@ def build_autonomous_research_graph(
     shallow_subagent: bool = True,
     shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
     shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+    shallow_subagent_tools: Sequence[str] | None = None,
+    shallow_subagent_exclude_tools: Sequence[str] | None = None,
 ) -> AutonomousResearchGraphRun:
     """Build the full DeepAgents graph for one autonomous research run.
 
@@ -741,8 +789,10 @@ def build_autonomous_research_graph(
             llm_provider=llm_provider,
             # The request's raw NAT tools (already filtered by data_sources upstream), NOT
             # tool_set.researcher_tools: the shallow researcher must run exactly as it does
-            # standalone, where it receives the plain tool list.
-            tools=tools,
+            # standalone, where it receives the plain tool list. Optionally narrowed further by
+            # shallow_subagent_tools / shallow_subagent_exclude_tools, which apply to this
+            # sub-run alone - orchestrator_tools below is built from the unnarrowed `tools`.
+            tools=_shallow_subagent_tools(tools, shallow_subagent_tools, shallow_subagent_exclude_tools),
             callbacks=callbacks,
             capture=shallow_capture,
             source_registry_middleware=source_registry_middleware,

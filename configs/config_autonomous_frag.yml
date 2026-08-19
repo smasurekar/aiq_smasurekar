@@ -78,10 +78,17 @@ functions:
         tools:
           - knowledge_search
 
+  # Retrieval width, set from measurement rather than from parity with
+  # config_adaptive_frag.yml. The shallow-only arm (harbor job 2026-08-19__22-07-42, F1 0.576)
+  # ran a single Tavily tool at 5 results x 10000 chars; this arm ran 2 results with 1000-char
+  # truncation and scored 0.447. Same model, same dataset, same shallow agent - the evidence
+  # budget per search is the difference, so match the wider profile here.
   web_search_tool:
     _type: tavily_web_search
+    include_answer: advanced
     max_results: 5
-    max_content_length: 1000
+    max_content_length: 10000
+    advanced_search: true
 
   advanced_web_search_tool:
     _type: tavily_web_search
@@ -115,6 +122,13 @@ functions:
     shallow_subagent: true
     shallow_subagent_max_tool_iterations: 5
     shallow_subagent_max_llm_turns: 10
+    # Pin the sub-run to the wide retrieval tool. Offered both, the model took
+    # advanced_web_search_tool (2 results) on 204 of 212 shallow searches and left
+    # web_search_tool (5 results x 10000 chars) unused - and in a single bounded pass whose
+    # report ends the request, those ~5 calls are all the evidence there will ever be.
+    # Scoped to the sub-run: the orchestrator and researcher-agent keep both tools.
+    shallow_subagent_tools:
+      - web_search_tool
     researcher_loop_guard:
       enabled: true
       source_call_budgets:
