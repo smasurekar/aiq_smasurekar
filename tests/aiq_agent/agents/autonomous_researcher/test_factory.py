@@ -20,6 +20,7 @@ the full retrieval menu, exactly three subagents can act, deepagents' default ge
 subagent is never built, and no tier artifact survives anywhere in the rendered prompt.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from langchain_core.tools import tool
 from aiq_agent.agents.autonomous_researcher.agent import AutonomousResearcherAgent
 from aiq_agent.agents.autonomous_researcher.custom_middleware import AutonomousFinalReportCommitTracker
 from aiq_agent.agents.autonomous_researcher.factory import GENERAL_PURPOSE_SUBAGENT_NAME
+from aiq_agent.agents.autonomous_researcher.factory import _shallow_subagent_tools
 from aiq_agent.agents.autonomous_researcher.factory import build_planner_subagent_description
 from aiq_agent.agents.autonomous_researcher.factory import build_writer_subagent_description
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchAgentState
@@ -659,3 +661,53 @@ class TestControlArmsAreUnaffected:
         before = dict(harness_profiles._HARNESS_PROFILES)
         _build_and_capture(mock_llm_provider)
         assert dict(harness_profiles._HARNESS_PROFILES) == before
+
+
+class TestShallowSubagentToolNarrowing:
+    """`shallow_subagent_tools` / `shallow_subagent_exclude_tools` scope retrieval to the sub-run.
+
+    The knobs exist because the global `tools` / `exclude_tools` cannot express "the orchestrator
+    keeps both web tools but the shallow sub-run only gets the wide one" — they decide what the
+    whole agent can reach. These tests pin the two properties that make the distinction real:
+    the narrowing applies, and it applies *only* to the sub-run.
+    """
+
+    @staticmethod
+    def _tools(*names):
+        # Not MagicMock: its `name` kwarg configures the mock's repr rather than setting a
+        # `.name` attribute, which is the exact attribute the filter reads.
+        return [SimpleNamespace(name=n) for n in names]
+
+    def test_unset_inherits_the_full_tool_set(self):
+        tools = self._tools("web_search_tool", "advanced_web_search_tool")
+        assert _shallow_subagent_tools(tools, None, None) == tools
+        assert _shallow_subagent_tools(tools, [], []) == tools
+
+    def test_allowlist_narrows_to_the_named_tools(self):
+        tools = self._tools("web_search_tool", "advanced_web_search_tool", "knowledge_search")
+        selected = _shallow_subagent_tools(tools, ["web_search_tool"], None)
+        assert [t.name for t in selected] == ["web_search_tool"]
+
+    def test_exclude_list_applies_after_the_allowlist(self):
+        tools = self._tools("web_search_tool", "advanced_web_search_tool")
+        selected = _shallow_subagent_tools(
+            tools,
+            ["web_search_tool", "advanced_web_search_tool"],
+            ["advanced_web_search_tool"],
+        )
+        assert [t.name for t in selected] == ["web_search_tool"]
+
+    def test_empty_result_falls_back_to_the_full_set(self):
+        """A sub-run with zero tools answers from memory — the one outcome this path prevents.
+
+        Reachable without a typo: startup validates the names against the agent's tool set, but a
+        request's `data_sources` can still exclude every allowed tool.
+        """
+        tools = self._tools("web_search_tool")
+        assert _shallow_subagent_tools(tools, ["knowledge_search"], None) == tools
+
+    def test_narrowing_does_not_touch_the_orchestrator_tool_set(self, mock_llm_provider):
+        """The orchestrator keeps every tool the agent was built with."""
+        captured = _build_and_capture(mock_llm_provider)
+        orchestrator_tool_names = {getattr(t, "name", "") for t in captured["tools"]}
+        assert "web_search_tool" in orchestrator_tool_names

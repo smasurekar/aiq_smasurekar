@@ -169,6 +169,31 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         ge=1,
         description="Maximum tool-calling iterations inside one shallow-researcher sub-run.",
     )
+    # Retrieval narrowing for the sub-run only. `tools` / `exclude_tools` above are global: they
+    # decide what the whole agent can reach, so they cannot express "the orchestrator keeps both
+    # web tools but the shallow sub-run only gets the wide one". These two do exactly that, and
+    # leave the orchestrator's and researcher subagents' tool sets untouched.
+    #
+    # This matters because the shallow sub-run is a single bounded pass whose report can end the
+    # request outright — the evidence it gathers in ~5 calls IS the answer, with no later turn to
+    # widen it. When a narrow and a wide retrieval tool are both on offer the model reliably picks
+    # the narrow one (measured: 204 of 212 shallow searches went to a 2-result tool over a
+    # 5-result one), so pinning the sub-run to the wide tool is worth more here than anywhere else.
+    shallow_subagent_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool names the shallow-researcher sub-agent may use. Empty (default) inherits the "
+            "agent's full tool set. Applied after the request's data_sources filter and after "
+            "exclude_tools, and only to the sub-run."
+        ),
+    )
+    shallow_subagent_exclude_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool names withheld from the shallow-researcher sub-agent only. Applied after "
+            "shallow_subagent_tools. The orchestrator and the other subagents keep them."
+        ),
+    )
 
     @field_validator("skills", mode="before")
     @classmethod
@@ -204,6 +229,22 @@ async def autonomous_research_agent(config: AutonomousResearchAgentConfig, build
     tools = [t for t in tools if getattr(t, "name", "") not in excluded]
     if dropped:
         logger.info("Autonomous research excluded %d configured tool(s): %s", len(dropped), ", ".join(dropped))
+
+    # Fail fast on a misspelt shallow tool name. Silently ignoring one would leave the sub-run on
+    # the full tool set while the config claims it is pinned - the exact situation these knobs
+    # exist to rule out. Checked against the post-exclude_tools names, which is what the sub-run
+    # can actually be given.
+    configured_names = {getattr(t, "name", "") for t in tools}
+    for field_name, requested in (
+        ("shallow_subagent_tools", config.shallow_subagent_tools),
+        ("shallow_subagent_exclude_tools", config.shallow_subagent_exclude_tools),
+    ):
+        unknown = sorted(set(requested) - configured_names)
+        if unknown:
+            raise ValueError(
+                f"{field_name} names tool(s) this agent does not have: {', '.join(unknown)}. "
+                f"Available: {', '.join(sorted(n for n in configured_names if n)) or '(none)'}"
+            )
 
     from aiq_agent.common import validate_tool_availability
 
@@ -254,6 +295,8 @@ async def autonomous_research_agent(config: AutonomousResearchAgentConfig, build
             shallow_subagent=config.shallow_subagent,
             shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
             shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,
+            shallow_subagent_tools=config.shallow_subagent_tools,
+            shallow_subagent_exclude_tools=config.shallow_subagent_exclude_tools,
         )
 
     agent = _build_agent(tools)
