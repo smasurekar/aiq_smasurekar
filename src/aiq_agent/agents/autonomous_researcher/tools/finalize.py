@@ -53,6 +53,62 @@ FINAL_REPORT_PATH = "/shared/final_report.md"
 FINAL_REPORT_META_PATH = "/shared/final_report_meta.json"
 
 
+def commit_final_report(
+    *,
+    backend: Any | None,
+    tracker: Any | None,
+    markdown: str,
+    researched: bool,
+    source: str = "orchestrator",
+) -> str:
+    """Persist ``markdown`` as the run's authoritative inline report and record the commit.
+
+    Extracted from ``submit_final_report`` because there are now two ways the inline exit is
+    reached: the orchestrator calling the tool, and ``ShallowFinalizationMiddleware`` committing a
+    completed shallow-researcher report without an orchestrator turn. Both must write the same two
+    files, fail the same way on an upload error, and record the commit in the same order — so
+    there is exactly one implementation of that contract.
+
+    Args:
+        backend: The run's shared filesystem backend, or ``None`` to skip persistence.
+        tracker: The run's :class:`AutonomousFinalReportCommitTracker`, or ``None``.
+        markdown: The complete final answer. Must be non-empty after stripping.
+        researched: Whether any research backs the answer; drives citation verification downstream.
+        source: Log-only label naming which path produced the report.
+
+    Returns:
+        The stripped report text that was committed.
+
+    Raises:
+        ValueError: If ``markdown`` is empty.
+        RuntimeError: If the backend rejected either write.
+    """
+    text = (markdown or "").strip()
+    if not text:
+        raise ValueError("a final report requires non-empty markdown containing the final answer.")
+    if backend is not None:
+        files = [
+            (FINAL_REPORT_PATH, text.encode("utf-8")),
+            (FINAL_REPORT_META_PATH, json.dumps({"researched": bool(researched)}).encode("utf-8")),
+        ]
+        responses = backend.upload_files(files)
+        errors = [f"{r.path}: {r.error}" for r in responses if getattr(r, "error", None)]
+        if errors:
+            raise RuntimeError(f"failed to record final report: {'; '.join(errors)}")
+    if tracker is not None:
+        # Commit the inline side of the dual-exit contract only after the write succeeded, so a
+        # failed upload cannot satisfy the finalization guard with an unreadable report.
+        tracker.record_inline(text)
+    # Metadata only: the report body is never logged (see common.logging_utils).
+    logger.info(
+        "Finalized report inline | source=%s | researched=%s | length=%d chars",
+        source,
+        bool(researched),
+        len(text),
+    )
+    return text
+
+
 def build_submit_final_report_tool(
     *,
     backend: Any | None = None,
@@ -97,26 +153,17 @@ def build_submit_final_report_tool(
                 verification for this answer. An honest "I could not verify this" after research
                 was attempted stays True.
         """
-        text = (markdown or "").strip()
-        if not text:
+        if not (markdown or "").strip():
             raise ValueError(
                 "submit_final_report requires a non-empty 'markdown' argument containing the final answer."
             )
-        if backend is not None:
-            files = [
-                (FINAL_REPORT_PATH, text.encode("utf-8")),
-                (FINAL_REPORT_META_PATH, json.dumps({"researched": bool(researched)}).encode("utf-8")),
-            ]
-            responses = backend.upload_files(files)
-            errors = [f"{r.path}: {r.error}" for r in responses if getattr(r, "error", None)]
-            if errors:
-                raise RuntimeError(f"failed to record final report: {'; '.join(errors)}")
-        if tracker is not None:
-            # Commit the inline side of the dual-exit contract only after the write succeeded, so
-            # a failed upload cannot satisfy the finalization guard with an unreadable report.
-            tracker.record_inline(text)
-        # Metadata only: the report body is never logged (see common.logging_utils).
-        logger.info("Finalized report inline | researched=%s | length=%d chars", bool(researched), len(text))
+        commit_final_report(
+            backend=backend,
+            tracker=tracker,
+            markdown=markdown,
+            researched=researched,
+            source="orchestrator",
+        )
         return "Recorded final report."
 
     return submit_final_report

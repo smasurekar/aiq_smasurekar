@@ -28,6 +28,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from aiq_agent.agents.autonomous_researcher import register as register_module
 from aiq_agent.agents.autonomous_researcher.custom_middleware import AutonomousFinalReportCommitTracker
 from aiq_agent.agents.autonomous_researcher.register import DEFAULT_EXCLUDED_SYNTHESIZING_TOOLS
 from aiq_agent.agents.autonomous_researcher.register import AutonomousResearchAgentConfig
@@ -44,9 +45,9 @@ TIER_KNOBS = (
     "single_loop_single_shot",
     "dynamic_orchestrator_sections",
     "single_shot_search_budget",
+    # The tier-qualified spelling stays absent: this agent's knob is `shallow_subagent`, and the
+    # sub-agent it enables is reached by description rather than gated on a declared tier.
     "single_shot_shallow_subagent",
-    "shallow_subagent_max_llm_turns",
-    "shallow_subagent_max_tool_iterations",
     "single_shot_researcher_llm",
 )
 SOURCE_ROUTER_KNOBS = ("source_router_llm", "enable_source_router", "domain_catalog_path")
@@ -81,6 +82,27 @@ class TestConfigSurface:
         ):
             assert kept in fields, kept
 
+    def test_shallow_subagent_knobs(self):
+        fields = AutonomousResearchAgentConfig.model_fields
+        assert fields["shallow_subagent"].default is True, "default-on: the easy request is the common case"
+        assert fields["shallow_subagent_max_llm_turns"].default == 10
+        assert fields["shallow_subagent_max_tool_iterations"].default == 5
+
+    @pytest.mark.parametrize("knob", ["shallow_subagent_max_llm_turns", "shallow_subagent_max_tool_iterations"])
+    def test_shallow_loop_bounds_must_be_positive(self, knob):
+        with pytest.raises(ValidationError):
+            AutonomousResearchAgentConfig(orchestrator_llm="llm", **{knob: 0})
+
+    def test_shallow_knobs_are_forwarded_to_the_agent(self):
+        """A config knob that never reaches the constructor is silently inert."""
+        source = Path(register_module.__file__).read_text(encoding="utf-8")
+        for forwarded in (
+            "shallow_subagent=config.shallow_subagent",
+            "shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns",
+            "shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations",
+        ):
+            assert forwarded in source, forwarded
+
     def test_unknown_keys_are_rejected(self):
         with pytest.raises(ValidationError):
             AutonomousResearchAgentConfig(orchestrator_llm="llm", enabled_tiers=["deep"])
@@ -107,6 +129,9 @@ class TestShippedConfig:
         agent = config["functions"]["autonomous_research_agent"]
         for knob in (*TIER_KNOBS, *SOURCE_ROUTER_KNOBS):
             assert knob not in agent, knob
+
+    def test_config_enables_the_shallow_subagent(self, config):
+        assert config["functions"]["autonomous_research_agent"]["shallow_subagent"] is True
 
 
 class TestSubmitFinalReport:

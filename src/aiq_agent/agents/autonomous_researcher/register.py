@@ -62,6 +62,8 @@ from nat.data_models.function import FunctionBaseConfig
 
 from .agent import DEFAULT_MAX_RESEARCH_CONCURRENCY
 from .agent import AutonomousResearcherAgent
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS
+from .factory import DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS
 from .models import AutonomousRequestTerminationConfig
 from .models import AutonomousResearchAgentState
 from .models import ResearcherLoopGuardConfig
@@ -146,6 +148,27 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         ge=1,
         description="Maximum concrete inputs accepted by batch-capable source tool wrappers.",
     )
+    # Deliberately named `shallow_subagent`, not the adaptive arm's `single_shot_shallow_subagent`:
+    # there is no effort tier to qualify it with here. Default-on because a request one agent can
+    # finish is the common case, and answering it through the full research cycle is pure overhead.
+    shallow_subagent: bool = Field(
+        default=True,
+        description=(
+            "Offer the shallow-researcher sub-agent, which answers an easy request end to end and "
+            "whose report finishes the run with no further orchestrator turn. Automatically "
+            "suppressed for parent-report deltas."
+        ),
+    )
+    shallow_subagent_max_llm_turns: int = Field(
+        default=DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
+        ge=1,
+        description="Maximum LLM turns inside one shallow-researcher sub-run.",
+    )
+    shallow_subagent_max_tool_iterations: int = Field(
+        default=DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+        ge=1,
+        description="Maximum tool-calling iterations inside one shallow-researcher sub-run.",
+    )
 
     @field_validator("skills", mode="before")
     @classmethod
@@ -228,6 +251,9 @@ async def autonomous_research_agent(config: AutonomousResearchAgentConfig, build
             max_research_concurrency=config.max_research_concurrency,
             max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
             max_source_tool_batch_size=config.max_source_tool_batch_size,
+            shallow_subagent=config.shallow_subagent,
+            shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
+            shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,
         )
 
     agent = _build_agent(tools)

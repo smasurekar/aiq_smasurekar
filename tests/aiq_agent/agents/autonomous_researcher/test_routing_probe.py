@@ -118,9 +118,16 @@ _SOURCE_TOOL_NAMES = frozenset(t.name for t in _STUB_SOURCE_TOOLS)
 # Probe corpus — 24 items, 6 per bucket
 # =================================================================================================
 # Buckets are named for the ROUTE they should elicit, not for a category the request belongs to.
-# The prompt states two properties (do the unknowns depend on each other; is the deliverable's
-# structure part of the ask) and deliberately defines no request taxonomy, so a bucket here is an
-# expectation about tool selection, not a label the model is asked to produce.
+# The prompt states three properties (could one agent finish the whole thing; do the unknowns
+# depend on each other; is the deliverable's structure part of the ask) and deliberately defines
+# no request taxonomy, so a bucket here is an expectation about tool selection, not a label the
+# model is asked to produce.
+#
+# EASY_SINGLE_AGENT used to be ONE_INDEPENDENT_UNKNOWN and used to expect a one-query
+# run_research_batch. The shallow-researcher sub-agent is strictly cheaper for exactly this shape
+# — one bounded run that returns the finished answer, versus a batch plus a composition turn — so
+# the expectation moved with the capability. `high` depth and direct-search assertions are gone
+# from that bucket for the same reason: neither is reachable through this route.
 
 NO_RESEARCH = [
     "Hi.",
@@ -131,7 +138,7 @@ NO_RESEARCH = [
     "Good morning!",
 ]
 
-ONE_INDEPENDENT_UNKNOWN = [
+EASY_SINGLE_AGENT = [
     "Who is the current CEO of Intel?",
     "What was NVIDIA's data-center revenue in its most recent reported quarter?",
     "What is the current population of Lagos?",
@@ -267,7 +274,7 @@ async def _first_turn(provider: LLMProvider, query: str) -> FirstTurn:
     agent = AutonomousResearcherAgent(llm_provider=provider, tools=list(_STUB_SOURCE_TOOLS))
     try:
         state = AutonomousResearchAgentState(messages=[HumanMessage(content=query)])
-        runnable = agent._build_orchestrator_agent(state, AutonomousFinalReportCommitTracker())
+        runnable = agent._build_orchestrator_agent(state, AutonomousFinalReportCommitTracker()).runnable
         async for update in runnable.astream(state, stream_mode="updates"):
             for node_update in (update or {}).values():
                 messages = (node_update or {}).get("messages") if isinstance(node_update, dict) else None
@@ -293,15 +300,18 @@ async def test_requests_with_nothing_to_find_out_do_not_research(probe_llm_provi
     assert researched in (False, "false", "False"), f"{query!r} -> researched={researched!r}"
 
 
-@pytest.mark.parametrize("query", ONE_INDEPENDENT_UNKNOWN)
-async def test_single_unknown_goes_through_one_worker(probe_llm_provider, query):
-    """Criterion 2: one unknown is delegated, not searched from the orchestrator's own context."""
+@pytest.mark.parametrize("query", EASY_SINGLE_AGENT)
+async def test_easy_request_goes_to_the_shallow_researcher(probe_llm_provider, query):
+    """Criterion 2: a request one agent can finish is handed over whole, in one call.
+
+    The shallow-researcher exit is auto-finalizing, so this first turn is the entire run when it
+    routes correctly. Pairing it with any other call would be a routing failure even if the
+    delegation itself is right, hence the exact-match on `names`.
+    """
     turn = await _first_turn(probe_llm_provider, query)
     assert not turn.direct_searches, f"{query!r} searched directly -> {turn}"
-    assert turn.names.count("run_research_batch") == 1, f"{query!r} -> {turn}"
-    queries = turn.batch_queries
-    assert len(queries) == 1, f"{query!r} -> {len(queries)} queries"
-    assert queries[0].get("depth") != "high", f"{query!r} -> depth={queries[0].get('depth')!r}"
+    assert turn.names == ["task"], f"{query!r} -> {turn}"
+    assert turn.subagent_types == ["shallow-researcher"], f"{query!r} -> {turn}"
 
 
 @pytest.mark.parametrize("query", SEVERAL_INDEPENDENT_UNKNOWNS)
@@ -327,9 +337,20 @@ async def test_fixed_structure_plans_before_researching(probe_llm_provider, quer
     assert "planner-agent" in turn.subagent_types, f"{query!r} -> {turn}"
 
 
+@pytest.mark.parametrize("query", SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED)
+async def test_shallow_researcher_is_not_used_for_work_that_must_be_split(probe_llm_provider, query):
+    """The counterweight to the bucket above: cheapest-first must not become cheapest-always.
+
+    A shallow run cannot fan out or honour a fixed section contract, and its report ends the run —
+    so choosing it here does not merely cost quality, it forecloses the correct path entirely.
+    """
+    turn = await _first_turn(probe_llm_provider, query)
+    assert "shallow-researcher" not in turn.subagent_types, f"{query!r} -> {turn}"
+
+
 @pytest.mark.parametrize(
     "query",
-    NO_RESEARCH + ONE_INDEPENDENT_UNKNOWN + SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED,
+    NO_RESEARCH + EASY_SINGLE_AGENT + SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED,
 )
 async def test_orchestrator_never_opens_with_a_direct_search(probe_llm_provider, query):
     """The 2-call direct budget is for verifying a researcher's result, so turn 1 never uses it.
