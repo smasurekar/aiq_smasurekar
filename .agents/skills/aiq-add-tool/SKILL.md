@@ -60,6 +60,9 @@ Longer procedures live in this bundle:
    graceful stub when a required secret is missing.
 5. Add the `[project.entry-points."nat.plugins"]` entry and install the package
    editable.
+5b. Ship it: add the distribution to `runtime-tools` in the root `pyproject.toml`, to
+   **both** hand-maintained lists in `deploy/Dockerfile` (the metadata `COPY` block and the
+   `uv pip install --no-deps -e ./sources/<pkg>` list), and to `scripts/setup.sh`.
 6. Reference the tool in a config under `configs/` (under `functions:`, then in
    an agent's `tools:` list).
 7. Add focused tests; run the validation commands below.
@@ -83,6 +86,11 @@ format failures for the new tool package.
 
 - Omitting the `[project.entry-points."nat.plugins"]` entry in `pyproject.toml`,
   so NAT never discovers the registration at import time.
+- Adding the package to `runtime-tools` but not to `deploy/Dockerfile`. The image's
+  `COPY sources/` is a wildcard, so the build still succeeds and the source tree is present —
+  but the distribution is never installed, its `nat.plugins` entry point does not exist, and
+  every config using its `_type` fails at startup with an "Input tag ... does not match any of
+  the expected tags" error. Guarded by `tests/deploy/test_runtime_image_packages.py`.
 - Crashing on a missing API key instead of yielding a stub that returns a clear
   error string.
 - Raising exceptions from the tool function; tools must return error messages as

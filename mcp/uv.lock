@@ -262,6 +262,7 @@ dev = [
     { name = "pytest-env", specifier = ">=1.1.0" },
     { name = "ruff", specifier = "~=0.15.1" },
     { name = "tavily-web-search", editable = "../sources/tavily_web_search" },
+    { name = "web-page-fetch", editable = "../sources/web_page_fetch" },
     { name = "yapf", specifier = ">=0.40.0" },
     { name = "you-com", editable = "../sources/you_com" },
 ]
@@ -274,6 +275,7 @@ runtime-tools = [
     { name = "nimble-web-search", editable = "../sources/nimble_web_search" },
     { name = "polymarket-prediction-market", editable = "../sources/polymarket_prediction_market" },
     { name = "tavily-web-search", editable = "../sources/tavily_web_search" },
+    { name = "web-page-fetch", editable = "../sources/web_page_fetch" },
 ]
 
 [[package]]

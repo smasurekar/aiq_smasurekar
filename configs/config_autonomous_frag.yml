@@ -68,10 +68,11 @@ functions:
     sources:
       - id: web_search
         name: "Web Search"
-        description: "Search the web for real-time information."
+        description: "Search the web for real-time information, and open specific pages."
         tools:
           - web_search_tool
           - advanced_web_search_tool
+          - fetch_url_tool
       - id: knowledge_layer
         name: "Knowledge Base"
         description: "Search uploaded documents and files."
@@ -87,13 +88,26 @@ functions:
     _type: tavily_web_search
     include_answer: advanced
     max_results: 5
-    max_content_length: 10000
+    max_content_length: 1000
     advanced_search: true
 
   advanced_web_search_tool:
     _type: tavily_web_search
     max_results: 2
     advanced_search: true
+
+  # The only tool here that OPENS a page rather than searching for one. The 90-task job made zero
+  # page opens against Codex's ~2 per task, and scored 0.12 FC on the 16 questions that name their
+  # source versus Codex's 0.81; those questions need a table, filing, or PDF read, which a search
+  # snippet cannot deliver. Budgets are in characters, not bytes: pages are extracted in full and
+  # then windowed, so the cost that matters is prompt context. 10k/page is 10x a web_search_tool
+  # snippet.
+  fetch_url_tool:
+    _type: web_page_fetch
+    max_urls_per_call: 4
+    max_chars_per_page: 10000
+    max_chars_per_call: 24000
+    extract_depth: advanced
 
   knowledge_search:
     _type: knowledge_retrieval
@@ -120,8 +134,8 @@ functions:
     # first entry in `task`; nothing forces the model to it, and nothing hides it afterwards.
     # Set to false for the A/B arm that compares against the four-subagent baseline.
     shallow_subagent: true
-    shallow_subagent_max_tool_iterations: 15
-    shallow_subagent_max_llm_turns: 30
+    shallow_subagent_max_tool_iterations: 10
+    shallow_subagent_max_llm_turns: 20
     # Pin the sub-run to the wide retrieval tool. Offered both, the model took
     # advanced_web_search_tool (2 results) on 204 of 212 shallow searches and left
     # web_search_tool (5 results x 10000 chars) unused - and in a single bounded pass whose
@@ -129,6 +143,7 @@ functions:
     # Scoped to the sub-run: the orchestrator and researcher-agent keep both tools.
     shallow_subagent_tools:
       - web_search_tool
+      - fetch_url_tool
     researcher_loop_guard:
       enabled: true
       source_call_budgets:
@@ -166,7 +181,10 @@ functions:
     request_termination:
       enabled: true
       max_batch_calls: 6
-      max_direct_source_calls: 5
+      # 5 -> 8: the increment is earmarked for fetch_url_tool page opens, which spend the same
+      # counter as direct searches. Revisit with a separate fetch budget if measurement shows
+      # searches crowding out opens.
+      max_direct_source_calls: 8
       max_identical_direct_source_calls: 2
       max_high_depth_queries: 3
       max_total_research_queries: 20

@@ -110,7 +110,24 @@ async def advanced_web_search_tool(question: str) -> str:
     return f"[stub] advanced web results for: {question}"
 
 
-_STUB_SOURCE_TOOLS = [web_search_tool, advanced_web_search_tool]
+@tool
+async def fetch_url_tool(urls: list[str], query: str | None = None, start_line: int = 0) -> str:
+    """Placeholder; the real description is attached below."""
+    return f"[stub] page content for: {urls}"
+
+
+# The fetch tool's description is the routing contract this probe most needs to exercise, so it is
+# taken from the live registration rather than retyped. A hand-copied description would drift and
+# the probe would then be measuring a prompt that is not shipped.
+try:
+    from web_page_fetch.register import _DESCRIPTION_FOR_PROBE
+
+    fetch_url_tool.description = _DESCRIPTION_FOR_PROBE
+except ImportError:  # pragma: no cover - probe still runs without the package installed
+    pass
+
+
+_STUB_SOURCE_TOOLS = [web_search_tool, advanced_web_search_tool, fetch_url_tool]
 _SOURCE_TOOL_NAMES = frozenset(t.name for t in _STUB_SOURCE_TOOLS)
 
 
@@ -348,6 +365,17 @@ async def test_shallow_researcher_is_not_used_for_work_that_must_be_split(probe_
     assert "shallow-researcher" not in turn.subagent_types, f"{query!r} -> {turn}"
 
 
+SOURCE_NAMED = [
+    "According to https://www.iea.nl/sites/default/files/2024-11/ICILS_2023_International_Report_0.pdf, "
+    "which countries teach computational thinking as a separate subject in primary school?",
+    "Using the USDA NASS 2017 Census of Agriculture, which three states produced the most maple syrup?",
+    "In World Bank Open Data, what was Kenya's GDP per capita in 2022?",
+    "Per table 2.2 of the ICILS 2023 international report, how many countries made CIL compulsory?",
+    "What does https://pmc.ncbi.nlm.nih.gov/articles/PMC9506306/ define as a 'no alcohol' product?",
+    "According to the FDIC, how many banks failed in 2023?",
+]
+
+
 @pytest.mark.parametrize(
     "query",
     NO_RESEARCH + EASY_SINGLE_AGENT + SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED,
@@ -360,3 +388,20 @@ async def test_orchestrator_never_opens_with_a_direct_search(probe_llm_provider,
     """
     turn = await _first_turn(probe_llm_provider, query)
     assert not turn.direct_searches, f"{query!r} -> {turn}"
+
+
+@pytest.mark.parametrize("query", SOURCE_NAMED)
+async def test_named_source_requests_never_open_with_a_bare_search(probe_llm_provider, query):
+    """Pattern 1: the failure the page-fetch capability exists to remove.
+
+    On the 16 DSQA questions that named their source the agent scored 0.12 fully-correct against a
+    reference agent's 0.81, because it searched *around* the named document instead of opening it
+    (jobs/2026-08-20__12-58-09/codex_vs_autonomous_analysis.md, section 4).
+
+    The contract is deliberately narrow. Turn 1 may delegate, and it may open the page directly —
+    for a request that supplies its own URL a single bounded fetch is often the whole research task
+    — but it must not be a bare keyword search against a source the request already identified.
+    """
+    turn = await _first_turn(probe_llm_provider, query)
+    searched = {"web_search_tool", "advanced_web_search_tool"} & set(turn.names)
+    assert not searched, f"{query!r} -> {turn}"

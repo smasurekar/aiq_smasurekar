@@ -688,6 +688,17 @@ class TestShallowSubagentToolNarrowing:
         selected = _shallow_subagent_tools(tools, ["web_search_tool"], None)
         assert [t.name for t in selected] == ["web_search_tool"]
 
+    def test_page_fetch_survives_the_shallow_narrowing(self):
+        """config_autonomous_frag.yml pins the sub-run to the wide search tool plus the page fetch.
+
+        Case 1 (Shallow-Researcher) was 32 of the 90 eval trials — the largest single shape — so a
+        narrowing that dropped fetch_url_tool would forfeit most of the capability's upside on the
+        very path that uses it most.
+        """
+        tools = self._tools("web_search_tool", "advanced_web_search_tool", "fetch_url_tool")
+        selected = _shallow_subagent_tools(tools, ["web_search_tool", "fetch_url_tool"], None)
+        assert [t.name for t in selected] == ["web_search_tool", "fetch_url_tool"]
+
     def test_exclude_list_applies_after_the_allowlist(self):
         tools = self._tools("web_search_tool", "advanced_web_search_tool")
         selected = _shallow_subagent_tools(
