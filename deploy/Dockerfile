@@ -61,6 +61,7 @@ ENV UV_PYTHON=/app/.venv/bin/python
 COPY pyproject.toml uv.lock ./
 COPY sources/google_scholar_paper_search/pyproject.toml ./sources/google_scholar_paper_search/
 COPY sources/tavily_web_search/pyproject.toml ./sources/tavily_web_search/
+COPY sources/web_page_fetch/pyproject.toml ./sources/web_page_fetch/
 COPY sources/exa_web_search/pyproject.toml ./sources/exa_web_search/
 COPY sources/nimble_web_search/pyproject.toml ./sources/nimble_web_search/
 COPY sources/duckduckgo_news_search/pyproject.toml ./sources/duckduckgo_news_search/
@@ -91,6 +92,7 @@ COPY deploy/entrypoint.py deploy/start_web.py ./deploy/
 RUN uv pip install --no-sources --no-deps -e . \
     && uv pip install --no-deps -e ./sources/google_scholar_paper_search \
     && uv pip install --no-deps -e ./sources/tavily_web_search \
+    && uv pip install --no-deps -e ./sources/web_page_fetch \
     && uv pip install --no-deps -e ./sources/exa_web_search \
     && uv pip install --no-deps -e ./sources/nimble_web_search \
     && uv pip install --no-deps -e ./sources/duckduckgo_news_search \

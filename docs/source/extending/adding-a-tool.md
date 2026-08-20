@@ -296,6 +296,38 @@ Install the new package:
 uv pip install -e ./sources/my_search_tool
 ```
 
+Add it to `scripts/setup.sh` so a fresh developer environment installs it too.
+
+### Shipping it in the runtime container
+
+Workspace auto-discovery covers local development only. To reach the deployed image the package
+must be added in **three** more places:
+
+1. The `runtime-tools` dependency group in the root `pyproject.toml`.
+2. The metadata copy block in `deploy/Dockerfile`, so `uv sync --frozen` can resolve it:
+
+   ```dockerfile
+   COPY sources/my_search_tool/pyproject.toml ./sources/my_search_tool/
+   ```
+
+3. The explicit install list in `deploy/Dockerfile`:
+
+   ```dockerfile
+       && uv pip install --no-deps -e ./sources/my_search_tool \
+   ```
+
+Step 3 is the one that matters most and the easiest to miss. `COPY sources/ ./sources/` is a
+wildcard, so your source tree reaches the image whether or not you install it — but NAT discovers
+tools through `nat.plugins` **entry points**, which exist only for *installed* distributions.
+Skip it and the build succeeds, then every config using your `_type` fails at startup with:
+
+```
+ValueError: Invalid configuration: functions: Input tag 'my_search_tool' found using
+discriminator() does not match any of the expected tags: ...
+```
+
+`tests/deploy/test_runtime_image_packages.py` guards both Dockerfile lists against this.
+
 ---
 
 ## Step 7: Use in a YAML Config
@@ -464,6 +496,7 @@ trusted tags, or creating additional document elements.
 | Tool | `_type` | Package | API Key |
 |---|---|---|---|
 | Tavily Web Search | `tavily_web_search` | `sources/tavily_web_search` | `TAVILY_API_KEY` |
+| Web Page Fetch | `web_page_fetch` | `sources/web_page_fetch` | `TAVILY_API_KEY` |
 | Exa Web Search | `exa_web_search` | `sources/exa_web_search` | `EXA_API_KEY` |
 | Nimble Web Search | `nimble_web_search` | `sources/nimble_web_search` | `NIMBLE_API_KEY` |
 | Google Scholar | `paper_search` | `sources/google_scholar_paper_search` | `SERPER_API_KEY` |
@@ -480,6 +513,8 @@ trusted tags, or creating additional document elements.
 - [ ] Clear docstring for LLM tool selection
 - [ ] Entry point in `pyproject.toml` `[project.entry-points."nat.plugins"]`
 - [ ] Installed with `uv pip install -e ./sources/<name>`
+- [ ] Added to `runtime-tools` in the root `pyproject.toml` and to **both** lists in `deploy/Dockerfile`
+- [ ] Added to `scripts/setup.sh`
 - [ ] YAML config references the tool correctly
 - [ ] Unit tests written and passing
 
