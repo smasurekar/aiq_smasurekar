@@ -160,6 +160,15 @@ class AutonomousResearchGraphRun:
 # /shared/plan.json, that forced zero writer calls too. See
 # misc/autonomous_researcher/autonomous-orchestrator-prompt-redesign-plan.md §D2.
 #
+# The rewrite that replaced it still won zero planner decisions (job 2026-08-20__09-11-27), for a
+# different reason: all three triggers described the DELIVERABLE (sections, matrices, briefings),
+# and a request whose answer is one line never looks like that however much work it takes. Trigger
+# (3) below describes the WORK instead — a request that narrows a set in steps — and is stated in
+# cues readable off the request's own wording, because turn one is the only place it can be judged
+# and the orchestrator has nothing but the question then. Deliberately no worked examples: this
+# text is tuned against DeepSearchQA, and examples lifted from it would tune the prompt to the
+# eval rather than to the shape.
+#
 # COST NOTE: because deepagents renders descriptions twice (tool schema + system prompt), text
 # moved here is paid for twice per orchestrator turn, whereas the prompt sections it replaced were
 # paid for once. Consolidating still removes two of the three copies, but keep these strings tight
@@ -190,17 +199,30 @@ class AutonomousResearchGraphRun:
 # successful report and ends the run before the model is called again. So "there is nothing to do
 # afterwards" is a fact rather than an instruction — the wording below tells the model that
 # plainly so it does not plan follow-up work it will never get to perform.
+#
+# WHEN TO CHOOSE IT used to key on the ANSWER being short ("a paragraph or two"), which is true of
+# essentially every eval question, so this subagent won turn one by default: 55 of 90 trials in
+# job 2026-08-20__09-11-27, including 14 of the 20 hard ones. It is a single sequential loop capped
+# at `shallow_subagent_max_tool_iterations`, and past ~12 searches its F1 fell to 0.32 against 0.625
+# below that — the capped runs published correct partial work ("no data for the remaining ten") as
+# the final answer, because this exit is unconditional. Hence the test keys on the REQUEST, and
+# hence DO NOT CHOOSE IT exists at all: nothing else can decline this route once it is taken.
 SHALLOW_SUBAGENT_DESCRIPTION = """\
 Answer the whole request end-to-end in one bounded run and return the finished, cited answer.
 
-WHEN TO CHOOSE IT: the request is one a single agent can finish by itself — the answer is a fact, \
-a short list, a definition, a current value, or a couple of related points, and you can already \
-picture the finished reply as a paragraph or two. Judge the REQUEST, not the topic: a question can \
-be about a specialist subject and still be easy. Choose it whenever nothing about the request \
-requires splitting the work up — you do not need a fixed set of sections, you are not chasing \
-several unrelated unknowns, and no answer has to be resolved before another can be asked. When \
-that is true this is always the right first move: it costs one run instead of a research cycle \
-plus a composition turn.
+WHEN TO CHOOSE IT: the request asks for one thing, once — a fact, a current value, a definition, \
+or a list — with no part of it depending on another part. Judge the REQUEST, not the topic: a \
+specialist subject can still be one lookup. You get ONE run of about a dozen searches and cannot \
+fan out, so choose this only when the answer clearly fits inside that. When it does, it is the \
+right first move: one run instead of a research cycle plus a composition turn.
+
+DO NOT CHOOSE IT when the request narrows a set in steps — it names a group, applies a condition \
+to cut that group down, then asks about what is left. Read that off the wording: "of those", "from \
+among these", "first … then", "exclude any that …", two number conditions stacked, or two \
+different publishers named for two different facts. This holds however short the answer would be, \
+because your report ENDS the run and a partial answer becomes the user's final answer. Send those \
+to planner-agent or run_research_batch. It does not apply when the request lists the candidates \
+itself, or when one source and one condition covers the whole request.
 
 SEQUENCING: FIRST, or not at all, and exactly ONCE. It is the opening move of the run or it is \
 never used. Once you have searched, batched, planned, or delegated anything else, this is no \
@@ -251,7 +273,7 @@ contain>
 locator for every claim, and state explicitly anything you could not verify."""
 
 
-# Spliced into ``{delta_line}`` when a parent report is mounted. That flag is also one of the three
+# Spliced into ``{delta_line}`` when a parent report is mounted. That flag is also one of the four
 # routing triggers, so it appears in WHEN TO CHOOSE IT as well.
 _PLANNER_DELTA_BRIEF_LINE = """
     This is a parent-report revision. Plan only the delta research needed to revise \
@@ -264,23 +286,39 @@ Turn a compound request into an explicit answer strategy plus a set of ResearchQ
 WHEN TO CHOOSE IT: ANY of these is true — (1) the request contains three or more distinct deliverables; \
 (2) the answer's structure must be fixed before research — a sectioned report, a comparison matrix, a \
 briefing — which also means you intend to publish through writer-agent, since writer-agent reads its \
-output contract from the plan; (3) a parent report is mounted for this request. For a multi-part RESEARCH \
-request this supersedes write_todos: delegate here rather than writing a todo list and researching it \
-yourself. Skip it when one batch of queries and an inline answer would fully satisfy the request.
+output contract from the plan; (3) the request narrows a set in steps: it names a group, applies a \
+condition to cut that group down, then asks about what is left. Read that off the wording: "of those", \
+"from among these", "first … then", "exclude any that …", two number conditions stacked, or two \
+different publishers named for two different facts. Judge the wording, not the answer's length — this \
+fires even when the reply is one line; (4) a parent report is mounted for this request. For a multi-part \
+RESEARCH request this supersedes write_todos: delegate here rather than writing a todo list and \
+researching it yourself. Skip it when the request lists the candidates itself, when one source and one \
+condition covers it, or when one batch of queries and an inline answer would fully satisfy the request.
 
-SEQUENCING: runs FIRST, or not at all. Planning after results are in hand is too late — the plan cannot \
-account for what you found, so you either re-run work or break the output contract the writer reads. If \
-you did not plan first, finish the run yourself. Never re-delegate here once research has begun.
+SEQUENCING: runs FIRST, or not at all — but it is not a default first step. When you can already write \
+every query the request needs, skip it and fan them out with run_research_batch; a plan buys nothing \
+there and costs a full sub-agent run before any evidence arrives. Reach for it only when the request is \
+staged, and then weigh it ahead of shallow-researcher, which cannot fan out and whose report ends the \
+run. Planning after results are in hand is too late — the plan cannot account for what you found, so you \
+either re-run work or break the output contract the writer reads. If you did not plan first, finish the \
+run yourself. Never re-delegate here once research has begun.
 
 WHAT IT PRODUCES: the runtime persists the returned plan to /shared/plan.json. Read it before starting \
-research. Its existence is also a hard prerequisite of the writer-agent path.
+research: its queries are what you fan out, and its answer_strategy is what tells you when the set is \
+complete. Which exit follows is decided by the trigger that brought you here, not by the plan existing: \
+triggers (1), (2) and (4) publish through writer-agent, which reads its output contract from this plan; \
+a request that met trigger (3) may well be answered in a line or two, so research the plan's queries and \
+finish with submit_final_report yourself.
 
 DELEGATION BRIEF — it cannot see this conversation, so paste full standalone context:
     Create a research plan for the following user request:
     <paste the user's complete request here verbatim>{delta_line}
     Use the search tools to establish what information exists and whether it is internal or external, then \
 return the plan with answer_strategy, constraints, and queries. Every query needs full standalone context \
-and a depth of low, medium, or high."""
+and a depth of low, medium, or high.
+    If the request narrows a set in steps, make the steps explicit: a query that establishes which members \
+qualify, then a query per member for the value that decides between them, plus the exact threshold or \
+ranking rule that picks the final answer."""
 
 
 def build_planner_subagent_description(*, parent_report_context_available: bool) -> str:
@@ -289,7 +327,7 @@ def build_planner_subagent_description(*, parent_report_context_available: bool)
     Args:
         parent_report_context_available: True when a parent report is mounted in ``/shared/`` for
             this request, which adds the delta-revision line to the brief and is itself one of the
-            three routing triggers.
+            four routing triggers.
     """
     return _PLANNER_SUBAGENT_DESCRIPTION.format(
         delta_line=_PLANNER_DELTA_BRIEF_LINE if parent_report_context_available else "",
