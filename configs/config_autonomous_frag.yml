@@ -120,8 +120,8 @@ functions:
     # first entry in `task`; nothing forces the model to it, and nothing hides it afterwards.
     # Set to false for the A/B arm that compares against the four-subagent baseline.
     shallow_subagent: true
-    shallow_subagent_max_tool_iterations: 5
-    shallow_subagent_max_llm_turns: 10
+    shallow_subagent_max_tool_iterations: 15
+    shallow_subagent_max_llm_turns: 30
     # Pin the sub-run to the wide retrieval tool. Offered both, the model took
     # advanced_web_search_tool (2 results) on 204 of 212 shallow searches and left
     # web_search_tool (5 results x 10000 chars) unused - and in a single bounded pass whose
