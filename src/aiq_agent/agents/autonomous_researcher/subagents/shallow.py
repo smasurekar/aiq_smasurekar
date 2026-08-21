@@ -62,9 +62,11 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool
 
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
+from aiq_agent.agents.shallow_researcher.agent import AGENT_DIR as SHALLOW_AGENT_DIR
 from aiq_agent.agents.shallow_researcher.agent import ShallowResearcherAgent
 from aiq_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from aiq_agent.common import LLMProvider
+from aiq_agent.common import load_prompt
 from aiq_agent.common.citation_verification import get_session_registry
 from aiq_agent.common.citation_verification import reset_session_registry
 from aiq_agent.common.citation_verification import set_session_registry
@@ -83,6 +85,58 @@ SHALLOW_RESEARCHER_SUBAGENT = "shallow-researcher"
 # notice, so the orchestrator falls back to ordinary research instead of burning its turn budget
 # on a path that cannot succeed.
 MAX_SHALLOW_ATTEMPTS = 2
+
+# Answer-set discipline for the shallow sub-run, appended to the shallow agent's own template.
+#
+# Why it lives here and not in `shallow_researcher/prompts/researcher.j2`: that template is shared
+# by every shipped config that offers a standalone shallow agent, and this contract is tuned for
+# the autonomous researcher's grading surface. Appending it per sub-run keeps the shared template
+# byte-identical for those configs (`test_default_model_profiles` pins that invariant).
+#
+# Why it exists at all: in DSQA-90 job 2026-08-20__21-44-00 the shallow exit produced 40.6% of its
+# answers with excessive items (mean 1.56) against 33.3% for the orchestrator's inline exit - the
+# gap being that the inline path carries an answer-set rule in orchestrator.j2 and this path
+# carried none. Trial 0256 is the clearest case: the grader counted the chart, the "Key Takeaways"
+# summary and the references section themselves as excessive answers.
+#
+# Must stay Jinja-inert. `render_prompt_template` uses StrictUndefined and the shallow agent's
+# render site passes only tools/user_info/current_datetime/available_documents, so any `{{ }}`,
+# `{% %}` or `{#` here would raise at agent-node time.
+SHALLOW_ANSWER_CONTRACT = """## Answering discipline
+
+Does the question name a discrete target? "Which X", "list all X", "how many X" and "identify X" \
+name one; "write a report on X" and "assess X" do not. When unsure, treat it as NOT discrete and \
+write the fuller answer.
+
+When the question names a discrete target, open with an `## Answer` section holding exactly the \
+entities that pass every filter the question states, and nothing else. Rejected candidates, close \
+alternatives, near-misses and "commonly confused with" entries never appear there, not even \
+flagged as excluded - anything named in that section is read as one of your answers. Put those \
+under a `### Considered and excluded` heading in the body instead, each with the reason it fails.
+
+Charts, tables, key-takeaway summaries and the references section belong below the `## Answer` \
+section, never inside it.
+
+Before answering, for each entity in the `## Answer` section, name the filter it satisfies. If you \
+cannot, remove it.
+
+When the question does not name a discrete target, answer at whatever length it warrants. There is \
+no length target here."""
+
+
+def _shallow_system_prompt() -> str | None:
+    """Return the shallow template with the answer contract appended, or ``None`` on failure.
+
+    Returning ``None`` hands construction back to ``ShallowResearcherAgent._load_system_prompt``,
+    which has its own inline fallback - so a missing or unreadable template degrades to today's
+    behaviour instead of failing the whole request over a prompt suffix.
+    """
+    try:
+        base = load_prompt(SHALLOW_AGENT_DIR / "prompts", "researcher")
+    except Exception:  # noqa: BLE001 - any load failure should degrade, never break the run
+        logger.warning("Shallow researcher template unavailable; sub-run falls back to its own default prompt")
+        return None
+    return f"{base}\n\n{SHALLOW_ANSWER_CONTRACT}"
 
 
 def _failure_notice(capture: ShallowSubagentCapture) -> str:
@@ -244,6 +298,7 @@ def build_shallow_researcher_subagent(
     shallow_agent = ShallowResearcherAgent(
         llm_provider=llm_provider,
         tools=list(tools),
+        system_prompt=_shallow_system_prompt(),
         max_llm_turns=max_llm_turns,
         max_tool_iterations=max_tool_iterations,
         callbacks=callbacks,
