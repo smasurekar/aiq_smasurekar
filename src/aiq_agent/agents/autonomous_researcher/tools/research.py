@@ -49,6 +49,7 @@ from aiq_agent.agents.deep_researcher.resource_limits import StateBudgetLedger
 from aiq_agent.agents.deep_researcher.tools.research import _persist_research_notes
 from aiq_agent.agents.deep_researcher.tools.research import _research_note_files
 from aiq_agent.agents.deep_researcher.tools.research import _run_research_queries
+from aiq_agent.common.logging_utils import log_content_metadata
 
 from ..models import AutonomousResearchQuery
 
@@ -124,6 +125,14 @@ def _log_research_depths(queries: list[AutonomousResearchQuery]) -> None:
             query.query if len(query.query) <= _QUERY_LOG_MAX_LENGTH else f"{query.query[:_QUERY_LOG_MAX_LENGTH]}…"
         )
         logger.info("  research query | depth=%-6s | %s", query.depth, preview)
+    # The preview above covers `query` only, truncated. `target_components`, `rationale`,
+    # `subqueries` and `preferred_tools` are the rest of a worker's entire instruction, and
+    # a worker that cannot satisfy its output contract is usually diagnosable from them.
+    # Digest-only by default; AIQ_LOG_PAYLOADS prints the batch verbatim.
+    logger.info(
+        "  research batch payload | %s",
+        log_content_metadata(json.dumps([query.model_dump(mode="json") for query in queries], ensure_ascii=False)),
+    )
 
 
 def build_autonomous_research_batch_tool(

@@ -31,6 +31,8 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools import tool
 
+from aiq_agent.common.logging_utils import log_content_metadata
+
 from ..models import ResearchNotes
 from ..models import ResearchQuery
 from ..researcher_context import CURRENT_RESEARCHER_GUARD_STATE
@@ -94,6 +96,17 @@ async def _run_research_query(
             depth=normalize_research_depth(getattr(query, "depth", None)),
         )
         guard_token = CURRENT_RESEARCHER_GUARD_STATE.set(guard_state)
+        # Workers in one batch run concurrently and interleave line-by-line in a single
+        # console log, so every worker-scoped line carries the invocation id the loop
+        # guards already key their state on. Without it a repeated tool call cannot be
+        # attributed to a worker, and a batch of three looks like one confused agent.
+        logger.info(
+            "Researcher worker %s starting | depth=%s tools=%s query %s",
+            guard_state.invocation_id,
+            guard_state.depth,
+            ",".join(getattr(query, "preferred_tools", None) or ()) or "-",
+            log_content_metadata(query.query),
+        )
         try:
             try:
                 result = await researcher_runnable.ainvoke(
@@ -101,6 +114,11 @@ async def _run_research_query(
                     config=researcher_invoke_config(runtime, callbacks),
                 )
             except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                logger.warning(
+                    "Researcher worker %s failed | %s",
+                    guard_state.invocation_id,
+                    log_content_metadata(exc),
+                )
                 raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
 
             try:
@@ -109,10 +127,29 @@ async def _run_research_query(
                     raise ValueError("researcher worker did not return structured ResearchNotes")
                 note = ResearchNotes.model_validate(structured)
             except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                # The only place the rejected structured payload can still be inspected:
+                # once this raises, `structured` is gone and the batch keeps only the
+                # message text. Digest-only by default, full payload under AIQ_LOG_PAYLOADS.
+                logger.warning(
+                    "Researcher worker %s returned unusable ResearchNotes | error: %s | payload %s",
+                    guard_state.invocation_id,
+                    exc,
+                    log_content_metadata(structured),
+                )
                 raise ValueError(
                     f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
                 ) from exc
 
+            logger.info(
+                "Researcher worker %s returned ResearchNotes | findings=%d gaps=%d sources=%d "
+                "source_calls=%d exhausted=%s",
+                guard_state.invocation_id,
+                len(note.findings),
+                len(note.gaps),
+                len(note.sources),
+                guard_state.source_call_count,
+                guard_state.exhausted,
+            )
             return note
         finally:
             CURRENT_RESEARCHER_GUARD_STATE.reset(guard_token)
@@ -253,6 +290,16 @@ def build_research_batch_tool(
                 )
             consumed_queries += len(queries)
             consumed_query_chars += batch_query_chars
+
+        # The orchestrator authors these queries and they are the only instruction a worker
+        # receives, so a worker that cannot satisfy its output contract is usually
+        # diagnosable from here. Digest-only by default; AIQ_LOG_PAYLOADS prints them.
+        logger.info(
+            "run_research_batch dispatching %d quer%s | %s",
+            len(queries),
+            "y" if len(queries) == 1 else "ies",
+            log_content_metadata(json.dumps([q.model_dump(mode="json") for q in queries], ensure_ascii=False)),
+        )
 
         successful_queries, notes, errors = await _run_research_queries(
             queries=queries,
