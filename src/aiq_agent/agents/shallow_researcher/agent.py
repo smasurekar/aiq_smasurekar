@@ -350,7 +350,8 @@ class ShallowResearcherAgent:
         repair_request = HumanMessage(
             content=(
                 "The immediately preceding draft failed the citation contract. Rewrite it once using only claims "
-                "supported by the prior tool results. Preserve the answer's meaning, remove unsupported claims, "
+                "supported by the prior tool results. Preserve the answer's meaning, and preserve the draft's "
+                "existing headings and section order verbatim. Remove unsupported claims, "
                 "and do not call tools. Add an inline [N] marker after each externally verified claim and finish "
                 "with a `**References:**` section. Copy the corresponding allowed reference lines verbatim; never "
                 "invent or reconstruct a URL. Return only the repaired report.\n\n"

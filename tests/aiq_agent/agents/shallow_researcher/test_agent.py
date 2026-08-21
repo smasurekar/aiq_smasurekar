@@ -334,6 +334,32 @@ class TestShallowResearcherAgent:
                 )
 
     @pytest.mark.asyncio
+    async def test_citation_repair_preserves_the_draft_structure(self, mock_llm_provider, mock_llm):
+        """Repair may rewrite citations, never the draft's section layout.
+
+        The repair pass is a second LLM call that rewrites the whole user-facing answer, so it is
+        an answering point in its own right. Without an explicit instruction it is free to
+        dissolve headings the draft was built around - including an `## Answer` section, whose
+        entire purpose is to be the one place an answer is read from.
+        """
+        captured = {}
+
+        async def capture(messages, *_args, **_kwargs):
+            captured["messages"] = messages
+            return AIMessage(content="Repaired [1]\n\n**References:**\n- [1] https://example.com/source")
+
+        mock_llm.ainvoke = AsyncMock(side_effect=capture)
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[])
+
+        await agent._repair_missing_citations(
+            [HumanMessage(content="## Answer\n- Skipjack tuna")],
+            [SourceEntry(url="https://example.com/source")],
+        )
+
+        instruction = "".join(str(m.content) for m in captured["messages"])
+        assert "existing headings and section order verbatim" in instruction
+
+    @pytest.mark.asyncio
     async def test_initial_answer_without_tool_call_is_retried(self, mock_llm_provider, mock_llm, real_tool):
         """An initial memory-only answer is retried and replaced by a tool call."""
         initial_answer = AIMessage(content="Memory-only answer")

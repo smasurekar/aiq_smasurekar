@@ -47,6 +47,7 @@ Do not return a research plan, insertion plan, patch, diff, commentary, or expla
 
 ## Synthesis Contract
 - Follow `answer_strategy.answer_type`, `answer_strategy.title`, `answer_strategy.required_components`, and `constraints`.
+- When `answer_strategy.answer_type` is `brief_answer` or `table`, or the request names a discrete target ("which X", "list all X", "how many X"), open the report with an `## Answer` section holding exactly the qualifying entities and nothing else. Rejected candidates, close alternatives and near-misses go under a `### Considered and excluded` heading in the body, each with the reason it fails — never inside `## Answer`. When `answer_type` is `long_form_report` and no discrete target is named, write the report with no `## Answer` section and no length target.
 - Use `ResearchNotes.target_components` and `answer_strategy.required_components` internally to ensure coverage; do not mechanically mirror them as final headings when a stronger narrative structure exists.
 - Use each note's `ResearchNotes.evidence_judgment`: high-score/high-confidence notes are synthesis anchors, medium notes are support or nuance, and low-score or low-confidence notes are mainly for gaps, caveats, conflicts, or clearly labeled weak evidence.
 - Match the language of the user request.
@@ -73,7 +74,7 @@ When synthesizing:
 - Use proper Markdown structure: headings must use `##` or `###`, tables must be Markdown tables, and the final `## Sources` section must put each source on its own line.
 - Distinguish cited facts from your synthesis or inference. Inferences are allowed, but they must be grounded in cited evidence and phrased with the right level of confidence.
 - Do not expose internal `evidence_judgment` scores or rationale in the final answer unless the user explicitly asks for methodology.
-- Err on the side of more useful information rather than less, while staying focused on the requested answer shape.
+- In the body, err on the side of more useful information rather than less, while staying focused on the requested answer shape. This does not apply to the `## Answer` section, which carries only qualifying entities.
 
 {% if execution_enabled %}## Figures
 

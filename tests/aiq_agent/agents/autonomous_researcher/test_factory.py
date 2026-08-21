@@ -39,6 +39,7 @@ from aiq_agent.agents.autonomous_researcher.factory import build_planner_subagen
 from aiq_agent.agents.autonomous_researcher.factory import build_writer_subagent_description
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchAgentState
 from aiq_agent.agents.autonomous_researcher.models import AutonomousResearchPlan
+from aiq_agent.agents.autonomous_researcher.subagents.shallow import SHALLOW_ANSWER_CONTRACT
 from aiq_agent.agents.autonomous_researcher.tools.research import build_autonomous_research_batch_tool
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
@@ -196,6 +197,37 @@ class TestShallowSubagentWiring:
         passed = [t.name for t in shallow_cls.call_args.kwargs["tools"]]
         assert passed == ["web_search_tool", "knowledge_search"]
         assert "get_verified_sources" not in passed
+
+    def test_the_shallow_sub_run_carries_the_answer_contract(self, mock_llm_provider):
+        """The shallow exit needs the same answer-set discipline the inline exit already has.
+
+        In DSQA-90 job 2026-08-20__21-44-00 the shallow exit emitted excessive items on 40.6% of
+        its trials (mean 1.56) against 33.3% for the inline exit, and the difference is that
+        orchestrator.j2 carries an answer-set rule while the shared shallow template carries none.
+        Injecting per sub-run rather than editing that template keeps it byte-identical for the
+        shipped configs that use the standalone shallow agent - see
+        `test_default_model_profiles.test_shallow_profiles_use_the_shared_citation_prompt`.
+        """
+        with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
+            _build_and_capture(mock_llm_provider)
+        prompt = shallow_cls.call_args.kwargs["system_prompt"]
+        assert prompt is not None
+        # The shared template is still the base ...
+        assert "You are a Shallow Research Agent" in prompt
+        # ... with the contract appended on top of it.
+        assert prompt.endswith(SHALLOW_ANSWER_CONTRACT)
+        assert "### Considered and excluded" in prompt
+        # Trial 0256: the grader read the chart, the takeaways block and the references section
+        # as answer items, so the contract has to place them below the answer explicitly.
+        assert "belong below the `## Answer`" in prompt
+
+    def test_the_shallow_contract_is_jinja_inert(self):
+        """`render_prompt_template` uses StrictUndefined and the shallow render site passes only
+        four variables, so a stray `{{ }}` in the contract would raise at agent-node time rather
+        than at build time - long after this test could have caught it.
+        """
+        for token in ("{{", "{%", "{#"):
+            assert token not in SHALLOW_ANSWER_CONTRACT, token
 
     def test_loop_bounds_are_forwarded(self, mock_llm_provider):
         with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
@@ -556,10 +588,49 @@ class TestOrchestratorPrompt:
             assert budget_claim not in prompt, budget_claim
 
     def test_states_the_answer_set_contract(self, mock_llm_provider):
-        """The precision fix: the answer may not enumerate rejected candidates."""
+        """The precision fix: rejected candidates may not sit where the answer sits."""
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
         assert "What goes in the answer" in prompt
         assert "only qualifying members" in prompt
+        # Rejected candidates are relocated, not banned - naming why something failed is good
+        # research writing, it just may not appear inside the answer section.
+        assert "### Considered and excluded" in prompt
+        # The self-check that catches a filter the model never actually applied (trial 0824).
+        assert "name the filter it satisfies" in prompt
+
+    def test_answer_shape_is_query_driven_not_length_capped(self, mock_llm_provider):
+        """Shape follows the question; nothing here may turn into a brevity rule.
+
+        This is the constraint under which the answer-set contract was accepted: the agent keeps
+        its long-report capability, and only questions that name a discrete target get an answer
+        section. The measurement backs it - in DSQA-90 job 2026-08-20__21-44-00, 3-6k-char answers
+        were the best-scoring band (FC 0.538 vs 0.488 for the shortest), so length was never the
+        defect. A future edit that reintroduces a word limit or a "be brief" instruction has
+        broken that contract, and this test is what catches it.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        section = prompt.split("## What goes in the answer", 1)[1].split("\n## ", 1)[0]
+        # Both arms of the query-driven rule are stated.
+        assert "**Does the question name a discrete target?**" in section
+        assert "`## Answer` section" in section
+        assert "**When the question does not name a discrete target**" in section
+        # Ambiguity resolves toward the fuller answer, never toward the shorter one.
+        assert "treat it as NOT discrete and write the fuller answer" in section
+        # And the section says so in as many words.
+        disclaimer = "no length target, and nothing here asking you to be brief"
+        assert disclaimer in section
+        # Scan everything except that disclaimer, which necessarily quotes the phrasing it forbids.
+        scanned = section.replace(disclaimer, "").lower()
+        for brevity_artifact in (
+            "be brief",
+            "be concise",
+            "keep it short",
+            "word limit",
+            "no more than",
+            "at most 500",
+            "maximum length",
+        ):
+            assert brevity_artifact not in scanned, brevity_artifact
 
     def test_source_tools_are_held_directly_but_demoted_to_verification(self, mock_llm_provider):
         """Source tools stay in the orchestrator's hands, and the prompt demotes them to
