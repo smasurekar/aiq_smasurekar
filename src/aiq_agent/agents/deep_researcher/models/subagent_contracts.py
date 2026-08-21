@@ -15,14 +15,22 @@
 
 """Structured response contracts for deep researcher planning, research, and synthesis."""
 
+import json
+from functools import cache
+from types import UnionType
 from typing import Annotated
+from typing import Any
 from typing import ClassVar
 from typing import Literal
+from typing import Union
+from typing import get_args
+from typing import get_origin
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import StringConstraints
+from pydantic import model_validator
 
 from ..resource_limits import DEFAULT_MAX_RESEARCH_QUERIES
 
@@ -32,10 +40,79 @@ ToolName = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 ComponentId = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 
 
+def _is_scalar_nested_model(annotation: Any) -> bool:
+    """Return True when ``annotation`` is a single nested ``BaseModel`` (optionally unioned with None).
+
+    Deliberately narrow: ``list[SomeModel]`` and every other container is excluded, because
+    list-of-object fields have never been observed arriving double-encoded, and widening the
+    rule would put genuine string fields at risk.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
+    if get_origin(annotation) in (Union, UnionType):
+        members = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return bool(members) and all(isinstance(arg, type) and issubclass(arg, BaseModel) for arg in members)
+    return False
+
+
+@cache
+def _scalar_nested_model_fields(model_cls: type[BaseModel]) -> tuple[str, ...]:
+    """Names of ``model_cls`` fields typed as a single nested model, computed once per class."""
+    return tuple(name for name, field in model_cls.model_fields.items() if _is_scalar_nested_model(field.annotation))
+
+
 class _StrictContract(BaseModel):
     """Base model for structured response schemas."""
 
     model_config: ClassVar[ConfigDict] = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decode_stringified_nested_models(cls, data: Any) -> Any:
+        """Decode a scalar nested-model field that arrived as a JSON-encoded string.
+
+        Models served without server-side tool-schema enforcement occasionally emit a field
+        typed as a single nested model as a JSON string -- the whole object serialized once more,
+        quotes and all -- instead of as an object, while emitting sibling list-of-object fields in
+        the same payload correctly. The
+        content underneath is well-formed; only the extra layer of JSON encoding is wrong.
+        Undoing that layer here turns what was an unrecoverable validation error -- and, before
+        the structured-output retry guard, an unbounded retry loop -- into a first-attempt
+        success.
+
+        Anything that does not fit that exact shape is passed through untouched so pydantic
+        still raises its normal, truthful error:
+
+        * only fields annotated as a scalar nested ``BaseModel`` are considered, so real string
+          fields such as ``rationale``, ``narrative_notes`` and ``summary`` are never parsed even
+          when their text happens to contain JSON fragments from a fetched page;
+        * only values that decode to a ``dict`` are substituted;
+        * a ``json.loads`` failure leaves the value alone rather than being swallowed, keeping
+          cases such as a whole plan packed into one string a visible, capped failure.
+
+        ``extra="forbid"`` is unaffected: this runs before it and never adds keys.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        decoded: dict[str, Any] | None = None
+        for name in _scalar_nested_model_fields(cls):
+            value = data.get(name)
+            if not isinstance(value, str):
+                continue
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                # Malformed JSON: leave it for pydantic to reject with the real error.
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            # Copy lazily so callers keep their input untouched when nothing needs decoding.
+            if decoded is None:
+                decoded = dict(data)
+            decoded[name] = parsed
+
+        return data if decoded is None else decoded
 
 
 class TaskAnalysis(_StrictContract):

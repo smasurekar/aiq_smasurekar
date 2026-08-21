@@ -60,6 +60,7 @@ from aiq_agent.agents.deep_researcher.custom_middleware import FilesystemToolCal
 from aiq_agent.agents.deep_researcher.custom_middleware import FinalReportOwnershipGuardMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StateMutationGuardMiddleware
+from aiq_agent.agents.deep_researcher.custom_middleware import StructuredOutputRetryGuardMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StructuredResponseTextFallbackMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoQuotaMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoSuppressionMiddleware
@@ -571,6 +572,7 @@ def _researcher_subagent_spec(
                 ),
                 TodoSuppressionMiddleware(),
                 StructuredResponseTextFallbackMiddleware(ResearchNotes),
+                StructuredOutputRetryGuardMiddleware(),
             ]
         ),
         "response_format": ResearchNotes,

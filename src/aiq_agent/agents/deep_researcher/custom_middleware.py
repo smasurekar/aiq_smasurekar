@@ -44,6 +44,7 @@ from aiq_agent.common.citation_verification import SourceRegistry
 from aiq_agent.common.citation_verification import extract_sources_from_tool_result
 from aiq_agent.common.citation_verification import is_non_citable_status_output
 from aiq_agent.common.logging_utils import log_content_metadata
+from aiq_agent.common.logging_utils import payload_logging_enabled
 
 from .models import ResearchNotes
 from .resource_limits import DeepResearchResourceLimits
@@ -168,6 +169,136 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
             return response
         logger.warning("Retrying %s as a tools-disabled JSON response", self.schema.__name__)
         return self._promote(await handler(self._correction_request(request)))
+
+
+class StructuredOutputRetryExhausted(RuntimeError):
+    """A sub-agent could not produce a schema-valid structured response."""
+
+
+class StructuredOutputRetryGuardMiddleware(AgentMiddleware):
+    """Log and bound LangChain's otherwise-unbounded structured-output retry loop.
+
+    Passing a Pydantic class as ``response_format`` compiles to
+    ``ToolStrategy(handle_errors=True)``. When the model's structured tool-call arguments
+    fail validation, LangChain appends ``"Error: <pydantic error>\\n Please fix your
+    mistakes."`` and calls the model again - with no attempt cap. The validation error is
+    written into the message history and nowhere else, so a model that deterministically
+    re-sends the same invalid arguments produces a silent loop that ends only on a
+    wall-clock timeout. Eval job ``2026-08-21__11-12-50`` lost two trials that way: 28
+    minutes and 26M tokens spent re-sending one byte-identical ``ResearchNotes`` payload.
+    See ``misc/autonomous_researcher/structured-output-retry-loop-analysis.md``.
+
+    This guard reads those error ``ToolMessage``s back out of the request, logs the
+    validation error LangChain would otherwise swallow, and raises once the model has spent
+    ``max_attempts`` tries on the same failure. Raising is the only way to stop the loop: a
+    ``handle_errors`` callable is always treated as "retry".
+
+    Two properties make it safe to attach to a runnable shared by concurrent workers:
+
+    * The attempt count is derived from the request's own message list, not from instance
+      state, so parallel ``run_research_batch`` workers cannot race each other.
+    * Detection keys off LangChain's error text rather than a schema name, so one instance
+      covers every structured schema on the agent - including the ones the autonomous and
+      adaptive factories retype after the spec is built.
+
+    Field paths and error types are logged unconditionally because they are what identifies
+    the defect. Pydantic echoes the offending value in ``input_value=``; that is customer
+    content, so it is redacted unless ``AIQ_LOG_PAYLOADS`` is set.
+    """
+
+    _ERROR_PREFIX = "Error: "
+    _VALIDATION_MARKER = "Failed to parse structured output for tool"
+    _MULTIPLE_MARKER = "returned multiple structured responses"
+    _INPUT_VALUE_RE = re.compile(r"input_value=.*?, input_type=", re.DOTALL)
+
+    def __init__(self, *, max_attempts: int = 3) -> None:
+        self._max_attempts = max(1, max_attempts)
+
+    @classmethod
+    def _is_structured_output_error(cls, message) -> bool:
+        """Whether ``message`` is LangChain's structured-output rejection, not a tool error."""
+        if not isinstance(message, ToolMessage):
+            return False
+        content = str(message.content)
+        if not content.startswith(cls._ERROR_PREFIX):
+            return False
+        return cls._VALIDATION_MARKER in content or cls._MULTIPLE_MARKER in content
+
+    def _redact(self, error: str) -> str:
+        if payload_logging_enabled():
+            return error
+        return self._INPUT_VALUE_RE.sub("input_value=<redacted>, input_type=", error)
+
+    def _rejected_arguments(self, message, tool_name: str) -> str:
+        """Serialize the tool-call arguments the paired ``AIMessage`` was rejected for."""
+        for call in getattr(message, "tool_calls", None) or ():
+            if call.get("name") != tool_name:
+                continue
+            try:
+                return json.dumps(call.get("args"), ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                return str(call.get("args"))
+        return ""
+
+    def _tail_rejections(self, messages) -> tuple[str, str, str, int] | None:
+        """Return ``(tool_name, error, arguments, attempts)`` for the failure run at the tail.
+
+        Walks backwards and stops at the first message outside the retry chain, so an earlier
+        failure the model already recovered from never inflates the count.
+
+        Counts the rejection messages themselves rather than assuming they alternate with the
+        ``AIMessage``s that caused them. Both shapes occur: providers that stamp a fresh id on
+        every response leave an alternating tail, while a provider that reuses one id has its
+        ``AIMessage`` replaced in place by ``add_messages``, leaving consecutive rejections.
+        Pairing them off would silently count zero on the second shape.
+        """
+        errors: list[str] = []
+        tool_name = ""
+        arguments = ""
+        for message in reversed(messages or ()):
+            if self._is_structured_output_error(message):
+                errors.append(str(message.content))
+                tool_name = tool_name or message.name or "structured_response"
+                continue
+            if isinstance(message, AIMessage):
+                if not errors:
+                    break
+                arguments = arguments or self._rejected_arguments(message, tool_name)
+                continue
+            break
+        if not errors:
+            return None
+        return tool_name, errors[0], arguments, len(errors)
+
+    def _check(self, request) -> None:
+        rejection = self._tail_rejections(getattr(request, "messages", None))
+        if rejection is None:
+            return
+        tool_name, error, arguments, attempts = rejection
+        logger.warning(
+            "%s failed schema validation on attempt %d/%d: %s | rejected arguments: %s",
+            tool_name,
+            attempts,
+            self._max_attempts,
+            self._redact(error),
+            log_content_metadata(arguments),
+        )
+        if attempts >= self._max_attempts:
+            raise StructuredOutputRetryExhausted(
+                f"{tool_name} failed schema validation on {attempts} consecutive attempts; "
+                f"abandoning this sub-run instead of retrying indefinitely. "
+                f"Last error: {self._redact(error)}"
+            )
+
+    def wrap_model_call(self, request, handler):
+        """Bound the structured-output retry loop before spending another model call."""
+        self._check(request)
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        """Bound the structured-output retry loop before spending another model call."""
+        self._check(request)
+        return await handler(request)
 
 
 def _is_researcher_finalization_request(request) -> bool:

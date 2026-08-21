@@ -46,12 +46,15 @@ from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMid
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRoutingGuardMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRoutingPersistenceMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StateMutationGuardMiddleware
+from aiq_agent.agents.deep_researcher.custom_middleware import StructuredOutputRetryExhausted
+from aiq_agent.agents.deep_researcher.custom_middleware import StructuredOutputRetryGuardMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StructuredResponseTextFallbackMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoQuotaMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoSuppressionMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolNameSanitizationMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolRetryMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolVisibilityMiddleware
+from aiq_agent.agents.deep_researcher.models import ResearchNotes
 from aiq_agent.agents.deep_researcher.models import SourceRoutingPlan
 from aiq_agent.agents.deep_researcher.resource_limits import DeepResearchResourceLimits
 from aiq_agent.agents.deep_researcher.resource_limits import StateBudgetLedger
@@ -1986,3 +1989,184 @@ class TestPlanPersistenceMiddleware:
         assert error_detail not in str(exc.value)
         assert error_detail not in caplog.text
         assert log_content_metadata(f"/shared/plan.json: {error_detail}") in caplog.text
+
+
+def _structured_output_error(field: str = "findings.0.confidence", value: str = "very high") -> str:
+    """Reproduce the ToolMessage LangChain writes when ToolStrategy validation fails."""
+    return (
+        "Error: Failed to parse structured output for tool 'ResearchNotes': "
+        "1 validation error for ResearchNotes\n"
+        f"{field}\n"
+        f"  Input should be 'low', 'medium' or 'high' [type=literal_error, "
+        f"input_value='{value}', input_type=str]\n"
+        "    For further information visit https://errors.pydantic.dev/2.12/v/literal_error.\n"
+        " Please fix your mistakes."
+    )
+
+
+def _rejected_turn(field: str = "findings.0.confidence", value: str = "very high") -> list:
+    """One rejected structured-output round trip: the tool call, then LangChain's rejection."""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "ResearchNotes", "args": {"query_topic": "t"}, "id": "call-1"}],
+        ),
+        ToolMessage(content=_structured_output_error(field, value), name="ResearchNotes", tool_call_id="call-1"),
+    ]
+
+
+class TestStructuredOutputRetryGuardMiddleware:
+    """The guard that bounds LangChain's unbounded ToolStrategy validation retry."""
+
+    @pytest.mark.asyncio
+    async def test_clean_request_passes_through(self):
+        """A request with no rejection in its tail spends its model call normally."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=3)
+        request = SimpleNamespace(messages=[HumanMessage(content="research this")])
+        handler = AsyncMock(return_value="ok")
+
+        assert await middleware.awrap_model_call(request, handler) == "ok"
+        handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_first_failure_logs_the_field_and_still_retries(self, caplog):
+        """One failure is recoverable, so the guard logs the cause and lets the retry happen."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=3)
+        request = SimpleNamespace(messages=[HumanMessage(content="q"), *_rejected_turn()])
+        handler = AsyncMock(return_value="ok")
+
+        with caplog.at_level(logging.WARNING):
+            assert await middleware.awrap_model_call(request, handler) == "ok"
+
+        handler.assert_awaited_once()
+        # The field path is the whole point: it is otherwise recorded nowhere.
+        assert "findings.0.confidence" in caplog.text
+        assert "attempt 1/3" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_raises_once_the_attempt_budget_is_spent(self):
+        """The loop this guard exists for ends only when something raises."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=2)
+        request = SimpleNamespace(messages=[HumanMessage(content="q"), *_rejected_turn(), *_rejected_turn()])
+        handler = AsyncMock(return_value="ok")
+
+        with pytest.raises(StructuredOutputRetryExhausted, match="2 consecutive attempts"):
+            await middleware.awrap_model_call(request, handler)
+
+        handler.assert_not_awaited()
+
+    def test_sync_path_is_guarded_too(self):
+        """`create_agent` may drive either hook; both must stop the loop."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=1)
+        request = SimpleNamespace(messages=[*_rejected_turn()])
+
+        with pytest.raises(StructuredOutputRetryExhausted):
+            middleware.wrap_model_call(request, MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_counts_only_the_unbroken_run_at_the_tail(self):
+        """An earlier failure the model already recovered from must not spend the budget."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=2)
+        request = SimpleNamespace(
+            messages=[
+                *_rejected_turn(),
+                ToolMessage(content="search results", name="web_search_tool", tool_call_id="call-9"),
+                *_rejected_turn(),
+            ]
+        )
+        handler = AsyncMock(return_value="ok")
+
+        assert await middleware.awrap_model_call(request, handler) == "ok"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_tool_failures_are_not_counted(self):
+        """A tool that returns an error string is not a structured-output rejection."""
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=1)
+        request = SimpleNamespace(
+            messages=[
+                AIMessage(content="", tool_calls=[{"name": "web_search_tool", "args": {}, "id": "call-2"}]),
+                ToolMessage(content="Error: upstream returned 503", name="web_search_tool", tool_call_id="call-2"),
+            ]
+        )
+        handler = AsyncMock(return_value="ok")
+
+        assert await middleware.awrap_model_call(request, handler) == "ok"
+
+    @pytest.mark.asyncio
+    async def test_offending_value_is_redacted_unless_payloads_are_enabled(self, caplog, monkeypatch):
+        """Field paths identify the defect; the echoed value is customer content."""
+        monkeypatch.delenv("AIQ_LOG_PAYLOADS", raising=False)
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=3)
+        request = SimpleNamespace(messages=[*_rejected_turn(value="patient-name-do-not-log")])
+
+        with caplog.at_level(logging.WARNING):
+            await middleware.awrap_model_call(request, AsyncMock(return_value="ok"))
+
+        assert "patient-name-do-not-log" not in caplog.text
+        assert "input_value=<redacted>" in caplog.text
+        assert "findings.0.confidence" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_payload_flag_reveals_the_value_and_the_rejected_arguments(self, caplog, monkeypatch):
+        """One switch turns the guard's warning into a complete reproduction."""
+        monkeypatch.setenv("AIQ_LOG_PAYLOADS", "1")
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=3)
+        request = SimpleNamespace(messages=[*_rejected_turn(value="very high")])
+
+        with caplog.at_level(logging.WARNING):
+            await middleware.awrap_model_call(request, AsyncMock(return_value="ok"))
+
+        assert "input_value='very high'" in caplog.text
+        assert '{"query_topic": "t"}' in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_counts_consecutive_rejections_with_no_interleaved_ai_message(self):
+        """A provider that reuses one message id leaves rejections with nothing between them.
+
+        `add_messages` replaces an AIMessage carrying an id it has already seen instead of
+        appending it, so the retry tail collapses to consecutive ToolMessages. Pairing each
+        rejection with a preceding AIMessage counts zero here and the loop runs forever.
+        """
+        middleware = StructuredOutputRetryGuardMiddleware(max_attempts=3)
+        error = ToolMessage(content=_structured_output_error(), name="ResearchNotes", tool_call_id="call-1")
+        request = SimpleNamespace(
+            messages=[
+                HumanMessage(content="q"),
+                AIMessage(content="", tool_calls=[{"name": "ResearchNotes", "args": {}, "id": "call-1"}]),
+                error,
+                error,
+                error,
+            ]
+        )
+
+        with pytest.raises(StructuredOutputRetryExhausted, match="3 consecutive attempts"):
+            await middleware.awrap_model_call(request, AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_stops_a_real_create_agent_structured_output_loop(self):
+        """The wiring test: an agent whose model always returns invalid arguments terminates.
+
+        Reproduces eval job 2026-08-21__11-12-50 in miniature. Without the guard this raises
+        `GraphRecursionError` after thousands of model calls instead.
+        """
+        bad_arguments = {
+            "query_topic": "t",
+            "target_components": ["c"],
+            "summary": "s",
+            "findings": [{"claim": "c", "evidence": "e", "source_ids": [1], "confidence": "very high", "caveats": []}],
+            "gaps": [],
+            "sources": [{"id": 1, "title": "T", "source_type": "url", "locator": "https://x"}],
+            "narrative_notes": "n",
+            "language": "en",
+        }
+        response = AIMessage(content="", tool_calls=[{"name": "ResearchNotes", "args": bad_arguments, "id": "c1"}])
+        agent = create_agent(
+            model=_ToolBindingFakeChatModel(responses=[response] * 50),
+            tools=[],
+            system_prompt="research",
+            middleware=[StructuredOutputRetryGuardMiddleware(max_attempts=3)],
+            response_format=ResearchNotes,
+        )
+
+        with pytest.raises(StructuredOutputRetryExhausted):
+            await agent.ainvoke({"messages": [HumanMessage(content="go")]})

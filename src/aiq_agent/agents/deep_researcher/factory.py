@@ -60,6 +60,7 @@ from .custom_middleware import SourceRegistryMiddleware
 from .custom_middleware import SourceRoutingGuardMiddleware
 from .custom_middleware import SourceRoutingPersistenceMiddleware
 from .custom_middleware import StateMutationGuardMiddleware
+from .custom_middleware import StructuredOutputRetryGuardMiddleware
 from .custom_middleware import StructuredResponseTextFallbackMiddleware
 from .custom_middleware import TodoQuotaMiddleware
 from .custom_middleware import TodoSuppressionMiddleware
@@ -401,6 +402,7 @@ def build_researcher_runnable(
             ),
             ResearcherFinalizationMiddleware(max_model_calls=max_researcher_model_calls),
             StructuredResponseTextFallbackMiddleware(ResearchNotes),
+            StructuredOutputRetryGuardMiddleware(),
             *researcher_middleware,
             *(visibility_middleware or []),
         ]
@@ -474,6 +476,7 @@ def build_deep_research_subagents(context: DeepResearchGraphContext) -> list[dic
                     ),
                     TodoSuppressionMiddleware(),
                     StructuredResponseTextFallbackMiddleware(SourceRoutingPlan),
+                    StructuredOutputRetryGuardMiddleware(),
                     SourceRoutingPersistenceMiddleware(
                         backend=context.backend,
                         state_budget=context.state_budget,
@@ -505,6 +508,7 @@ def build_deep_research_subagents(context: DeepResearchGraphContext) -> list[dic
                 ),
                 TodoSuppressionMiddleware(),
                 StructuredResponseTextFallbackMiddleware(ResearchPlan),
+                StructuredOutputRetryGuardMiddleware(),
                 PlanPersistenceMiddleware(
                     backend=context.backend,
                     state_budget=context.state_budget,

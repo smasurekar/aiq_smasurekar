@@ -15,9 +15,12 @@
 
 """Tests for deep researcher structured response contracts."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
+from aiq_agent.agents.adaptive_researcher.models.subagent_contracts import AdaptiveResearchPlan
 from aiq_agent.agents.deep_researcher.models import AnswerStrategy
 from aiq_agent.agents.deep_researcher.models import Constraint
 from aiq_agent.agents.deep_researcher.models import EvidenceJudgment
@@ -336,3 +339,226 @@ def test_subagent_contracts_reject_extra_fields_and_old_plan_shape():
         old_strategy[removed_field] = value
         with pytest.raises(ValidationError):
             AnswerStrategy.model_validate(old_strategy)
+
+
+def _research_notes(**overrides) -> dict:
+    payload = {
+        "query_topic": "CUDA vs OpenCL portability",
+        "target_components": ["programming_model"],
+        "summary": "CUDA is NVIDIA-specific while OpenCL targets portability.",
+        "findings": [],
+        "gaps": [],
+        "sources": [],
+        "narrative_notes": "OpenCL offers broader portability.",
+        "language": "English",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_stringified_evidence_judgment_is_decoded():
+    """The observed defect: a scalar nested model emitted as a JSON string instead of an object."""
+    notes = ResearchNotes.model_validate(
+        _research_notes(
+            evidence_judgment=json.dumps(
+                {
+                    "relevance_score": 95,
+                    "confidence": "high",
+                    "rationale": "Comprehensive coverage of all 38 OECD countries.",
+                }
+            )
+        )
+    )
+
+    assert isinstance(notes.evidence_judgment, EvidenceJudgment)
+    assert notes.evidence_judgment.relevance_score == 95
+    assert notes.evidence_judgment.confidence == "high"
+
+
+def test_stringified_required_nested_plan_fields_are_decoded():
+    """``answer_strategy`` is required and un-unioned, so the fix cannot key off optionality."""
+    plan = ResearchPlan.model_validate(
+        {
+            "task_analysis": json.dumps(_task_analysis()),
+            "answer_strategy": json.dumps(_answer_strategy()),
+            "constraints": [],
+            "queries": [_research_query()],
+        }
+    )
+
+    assert plan.task_analysis.user_intent == "Understand CUDA and OpenCL trade-offs."
+    assert plan.answer_strategy.answer_type == "comparison"
+    assert plan.answer_strategy.required_components[0].id == "programming_model"
+
+
+def test_stringified_nested_model_decoding_is_inherited_by_adaptive_plan():
+    """Subclasses that retype fields still get the coercion from ``_StrictContract``."""
+    plan = AdaptiveResearchPlan.model_validate(
+        {
+            "task_analysis": _task_analysis(),
+            "answer_strategy": json.dumps(_answer_strategy()),
+            "constraints": [],
+            "queries": [_research_query(depth="high")],
+        }
+    )
+
+    assert plan.answer_strategy.title == "CUDA and OpenCL Trade-offs"
+    assert plan.queries[0].depth == "high"
+
+
+def test_decoded_nested_model_still_validates_its_own_contract():
+    """Decoding only removes the encoding layer; the payload underneath is validated as usual."""
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchNotes.model_validate(
+            _research_notes(
+                evidence_judgment=json.dumps(
+                    {"relevance_score": 101, "confidence": "high", "rationale": "Out of range."}
+                )
+            )
+        )
+
+    assert excinfo.value.errors()[0]["loc"] == ("evidence_judgment", "relevance_score")
+
+
+def test_decoded_nested_model_still_forbids_extra_fields():
+    """``extra="forbid"`` is untouched: a decoded object cannot smuggle in invented keys."""
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchNotes.model_validate(
+            _research_notes(
+                evidence_judgment=json.dumps(
+                    {
+                        "relevance_score": 85,
+                        "confidence": "high",
+                        "rationale": "Useful.",
+                        "invented_field": "value",
+                    }
+                )
+            )
+        )
+
+    assert excinfo.value.errors()[0]["type"] == "extra_forbidden"
+
+
+def test_genuine_string_fields_containing_json_are_left_alone():
+    """Only nested-model fields are decoded, so prose carrying JSON fragments survives intact."""
+    json_prose = 'The page returned {"relevance_score": 95, "confidence": "high"} verbatim.'
+
+    notes = ResearchNotes.model_validate(
+        _research_notes(
+            summary=json_prose,
+            narrative_notes=json_prose,
+            evidence_judgment={"relevance_score": 85, "confidence": "high", "rationale": json_prose},
+        )
+    )
+
+    assert notes.summary == json_prose
+    assert notes.narrative_notes == json_prose
+    assert notes.evidence_judgment is not None
+    assert notes.evidence_judgment.rationale == json_prose
+
+
+def test_string_field_holding_a_bare_json_object_is_left_alone():
+    """A string field whose whole value is valid JSON is still a string, not a dict."""
+    encoded_object = json.dumps({"note": "quoted from a fetched page"})
+
+    notes = ResearchNotes.model_validate(_research_notes(narrative_notes=encoded_object))
+
+    assert notes.narrative_notes == encoded_object
+
+
+def test_stringified_list_of_objects_is_not_decoded():
+    """List-valued nested fields are out of scope and keep failing as before."""
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchNotes.model_validate(
+            _research_notes(
+                findings=json.dumps(
+                    [
+                        {
+                            "claim": "OpenCL is cross-vendor.",
+                            "evidence": "Open standard for heterogeneous platforms.",
+                            "source_ids": [1],
+                            "confidence": "high",
+                            "caveats": [],
+                        }
+                    ]
+                )
+            )
+        )
+
+    assert excinfo.value.errors()[0]["type"] == "list_type"
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "85",
+        '"high"',
+        "null",
+        "[{'relevance_score': 95}]",
+        json.dumps([{"relevance_score": 95, "confidence": "high", "rationale": "A list, not an object."}]),
+    ],
+)
+def test_strings_that_do_not_decode_to_an_object_fall_through_unchanged(encoded):
+    """Non-object and malformed values keep pydantic's truthful ``model_type`` error."""
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchNotes.model_validate(_research_notes(evidence_judgment=encoded))
+
+    error = excinfo.value.errors()[0]
+    assert error["loc"] == ("evidence_judgment",)
+    assert error["type"] == "model_type"
+    assert error["input"] == encoded
+
+
+def test_malformed_json_is_never_swallowed():
+    """A truncated blob -- the one captured value that does not re-parse -- stays a visible failure."""
+    truncated = json.dumps(_answer_strategy())[:-40]
+
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchPlan.model_validate(
+            {
+                "task_analysis": _task_analysis(),
+                "answer_strategy": truncated,
+                "constraints": [],
+                "queries": [],
+            }
+        )
+
+    assert excinfo.value.errors()[0]["type"] == "model_type"
+
+
+def test_plan_packed_into_answer_strategy_stays_a_visible_failure():
+    """The §3.4 relocation case: decoding exposes the misplaced keys instead of hiding them."""
+    packed = json.dumps({**_answer_strategy(), "constraints": [], "queries": []})
+
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchPlan.model_validate(
+            {
+                "task_analysis": _task_analysis(),
+                "answer_strategy": packed,
+                "constraints": [],
+                "queries": [],
+            }
+        )
+
+    error_types = {error["type"] for error in excinfo.value.errors()}
+    assert error_types == {"extra_forbidden"}
+
+
+def test_non_mapping_input_passes_through_the_decoder():
+    """The validator must not assume a mapping: a before-validator sees whatever the caller sent."""
+    with pytest.raises(ValidationError) as excinfo:
+        ResearchNotes.model_validate(["not", "a", "mapping"])
+
+    assert excinfo.value.errors()[0]["type"] == "model_type"
+
+
+def test_caller_input_dict_is_not_mutated_by_decoding():
+    """Decoding copies rather than rewriting the caller's payload, which callers still log."""
+    payload = _research_notes(
+        evidence_judgment=json.dumps({"relevance_score": 85, "confidence": "high", "rationale": "Useful."})
+    )
+    original = payload["evidence_judgment"]
+
+    ResearchNotes.model_validate(payload)
+
+    assert payload["evidence_judgment"] == original
