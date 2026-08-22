@@ -125,6 +125,22 @@ functions:
     researcher_llm: nemotron_super_llm
     planner_llm: nemotron_super_llm
     writer_llm: nemotron_super_llm
+    # Delegated research paths. Both on is the shipped behavior, and both cannot be false.
+    # `research_batch_tool` offers run_research_batch, which fans N independent questions out to N
+    # isolated workers in one call; `researcher_subagent` offers task(researcher-agent), which
+    # sends ONE topic to one worker that may hop between searches. Turning exactly one off is an
+    # A/B arm: the orchestrator prompt, every subagent description, the run_research_batch
+    # description, the shallow failure notice, and the loop guard's blocked-tool messages are all
+    # gated on these, so the model is never told to call a door this deployment does not hold.
+    #
+    # EVAL FAIRNESS: request_termination.max_batch_calls below is ONE shared ceiling, and a
+    # task(researcher-agent) delegation charges 1 call + 1 query while a run_research_batch call
+    # charges 1 call + N queries. A subagent-only arm therefore gets max_batch_calls research
+    # QUESTIONS in total, while a batch arm can reach max_total_research_queries. Compare arms as
+    # deployed and report source-tool calls per arm alongside accuracy, or raise max_batch_calls to
+    # match max_total_research_queries in the subagent-only arm so the query ceiling binds in both.
+    research_batch_tool: true
+    researcher_subagent: false
     # Per-researcher budgets. Unchanged from config_adaptive_frag.yml: `depth` is a per-query
     # knob, not an effort tier, so it carries over to the autonomous agent as-is. These bound one
     # run_research_batch worker; the request-wide envelope below bounds the whole request.

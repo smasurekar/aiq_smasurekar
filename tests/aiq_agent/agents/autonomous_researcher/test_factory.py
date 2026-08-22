@@ -793,3 +793,161 @@ class TestShallowSubagentToolNarrowing:
         captured = _build_and_capture(mock_llm_provider)
         orchestrator_tool_names = {getattr(t, "name", "") for t in captured["tools"]}
         assert "web_search_tool" in orchestrator_tool_names
+
+
+# =================================================================================================
+# Delegated-research door flags (eval A/B)
+# =================================================================================================
+
+# (arm id, research_batch_tool, researcher_subagent). Both-off is not an arm; it is rejected.
+RESEARCH_ARMS = [
+    ("both", True, True),
+    ("batch_only", True, False),
+    ("subagent_only", False, True),
+]
+
+# What each arm must NOT mention anywhere the model can read it.
+_ABSENT_ROUTE = {"batch_only": "researcher-agent", "subagent_only": "run_research_batch"}
+
+
+def _model_visible_text(captured: dict) -> str:
+    """Concatenate every string this build sends to the model as routing input.
+
+    Three separate mechanisms carry route names — ``render_prompt`` for the system prompt,
+    ``SubAgentMiddleware`` for subagent descriptions, and ``bind_tools`` for tool schemas — so a
+    per-file audit is not enough to prove a disabled door is gone.
+    """
+    parts = [captured["system_prompt"]]
+    parts += [str(spec.get("description", "")) for spec in captured["subagents"]]
+    parts += [str(spec.get("system_prompt", "")) for spec in captured["subagents"]]
+    parts += [str(tool.description or "") for tool in captured["tools"]]
+    return "\n".join(parts)
+
+
+class TestResearchDoorFlags:
+    """`research_batch_tool` / `researcher_subagent` each remove one delegated-research door."""
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_only_the_configured_doors_are_built(self, mock_llm_provider, arm, batch, subagent):
+        captured = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        tool_names = [t.name for t in captured["tools"]]
+        subagent_names = [s["name"] for s in captured["subagents"]]
+        assert ("run_research_batch" in tool_names) is batch
+        assert ("researcher-agent" in subagent_names) is subagent
+        # The rest of the menu is untouched in every arm: only the door moves.
+        assert {"think", "get_verified_sources", "submit_final_report"} <= set(tool_names)
+        assert {"planner-agent", "writer-agent", GENERAL_PURPOSE_SUBAGENT_NAME} <= set(subagent_names)
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_no_disabled_route_is_named_anywhere_the_model_can_read_it(self, mock_llm_provider, arm, batch, subagent):
+        """The keystone test for this feature.
+
+        In this agent descriptions ARE the routing logic, so a surviving mention of a door that was
+        not built does not fail loudly — the model emits a call for an unbound tool, gets a generic
+        dispatch error, and burns an orchestrator turn against ``max_orchestrator_turns`` with no
+        recovery instruction. Repeated across an eval that reads as a quality difference between
+        arms rather than as the bug it is. Every itemized gate elsewhere is a means to this end.
+        """
+        captured = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        absent = _ABSENT_ROUTE.get(arm)
+        if absent is None:
+            return
+        assert absent not in _model_visible_text(captured)
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_the_surviving_door_is_still_named(self, mock_llm_provider, arm, batch, subagent):
+        """The negative test above passes trivially if the routing text is simply gone."""
+        captured = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        text = _model_visible_text(captured)
+        assert ("run_research_batch" in text) is batch
+        assert ("researcher-agent" in text) is subagent
+        assert "Deciding what to do" in text
+        for always in ("submit_final_report", "planner-agent", "writer-agent"):
+            assert always in text, always
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_the_research_loop_stays_concise_in_every_arm(self, mock_llm_provider, arm, batch, subagent):
+        """The hot-path ceiling is not a default-arm-only guarantee; it is re-read every turn."""
+        prompt = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )["system_prompt"]
+        section = prompt.split("# The Research Loop", 1)[1].split("\n# ", 1)[0]
+        content_lines = [line for line in section.splitlines() if line.strip()]
+        assert len(content_lines) <= 6, f"{arm}: research loop grew to {len(content_lines)} content lines"
+        assert len(section) <= 1600, f"{arm}: research loop grew to {len(section)} chars"
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_the_decision_section_states_exactly_one_route_per_dependency_shape(
+        self, mock_llm_provider, arm, batch, subagent
+    ):
+        """Each arm must still answer "what do I do with a chain?" — with a door it holds."""
+        prompt = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )["system_prompt"]
+        assert "is a chain" in prompt
+        assert prompt.count("**Do the unknowns depend on each other?**") == 1
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_researcher_task_persistence_stays_wired_in_every_arm(self, mock_llm_provider, arm, batch, subagent):
+        """It is a no-op without the subagent, and the ONLY evidence seam without the batch."""
+        captured = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        assert "ResearcherTaskPersistenceMiddleware" in _middleware_names(captured)
+
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
+    def test_the_sanitizer_allowlist_tracks_the_batch_tool(self, mock_llm_provider, arm, batch, subagent):
+        captured = _build_and_capture(
+            mock_llm_provider,
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        sanitizer = next(m for m in captured["middleware"] if type(m).__name__ == "ToolNameSanitizationMiddleware")
+        assert ("run_research_batch" in set(sanitizer.valid_tool_names)) is batch
+        assert {"web_search_tool", "knowledge_search", "submit_final_report"} <= set(sanitizer.valid_tool_names)
+
+    def test_the_batch_worker_runnable_is_not_built_when_the_batch_is_off(self, mock_llm_provider):
+        """`researcher_runnable` exists only to feed the batch tool; the task spec builds its own."""
+        with patch("aiq_agent.agents.autonomous_researcher.factory.build_researcher_runnable") as build:
+            _build_and_capture(mock_llm_provider, research_batch_tool=False, researcher_subagent=True)
+        build.assert_not_called()
+
+    def test_both_doors_off_is_rejected_by_the_factory(self, mock_llm_provider):
+        """The factory is called directly by tests and by any caller bypassing the NAT config layer."""
+        with pytest.raises(ValueError, match="at least one delegated research path"):
+            _build_and_capture(mock_llm_provider, research_batch_tool=False, researcher_subagent=False)
+
+    def test_the_default_arm_is_unchanged(self, mock_llm_provider):
+        """The control arm's routing text must survive the flags byte for byte.
+
+        Everything the A/B measures is a delta against this arm, so a stray rewording here would
+        silently move the baseline.
+        """
+        prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
+        for sentence in (
+            "- **`run_research_batch`** is your primary research path;",
+            "your only route to `shallow-researcher`, `planner-agent`, `researcher-agent`, and `writer-agent`",
+            "name `fetch_url_tool` in that query's `preferred_tools`",
+            "steer them by naming them (exact names) in a `ResearchQuery.preferred_tools`",
+            "If a target fails twice, give the whole chain to `researcher-agent` once",
+            "One you cannot phrase until another is resolved is a chain — give the whole chain to `researcher-agent`.",
+        ):
+            assert sentence in prompt, sentence

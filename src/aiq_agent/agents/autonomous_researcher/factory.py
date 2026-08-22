@@ -28,6 +28,13 @@ In their place, two things carry the adaptivity:
 ``task`` reaches every subagent. Nothing is hidden by anything (the request-wide loop guard
 withdraws research tools once the budget is spent, which is termination, not routing).
 
+The one exception is *configuration*, not routing: ``research_batch_tool`` and
+``researcher_subagent`` each remove one of the two delegated-research doors for an eval A/B arm.
+That is a build-time decision - the door is never advertised and never appears - and every string
+that names a door is gated on the same flags, so the model is not told about a path it does not
+hold. They cannot both be false; ``AutonomousResearchAgentConfig`` and
+``build_autonomous_research_graph`` both reject that.
+
 **Descriptions do the routing.** ``SubAgentMiddleware`` renders each subagent's ``description``
 into the ``task`` tool and retrieval tool descriptions render into the prompt's context block, so
 describing a capability well *is* the routing logic. The description strings below are
@@ -208,7 +215,7 @@ class AutonomousResearchGraphRun:
 # below that — the capped runs published correct partial work ("no data for the remaining ten") as
 # the final answer, because this exit is unconditional. Hence the test keys on the REQUEST, and
 # hence DO NOT CHOOSE IT exists at all: nothing else can decline this route once it is taken.
-SHALLOW_SUBAGENT_DESCRIPTION = """\
+_SHALLOW_SUBAGENT_DESCRIPTION = """\
 Answer the whole request end-to-end in one bounded run and return the finished, cited answer.
 
 WHEN TO CHOOSE IT: the request asks for one thing, once — a fact, a current value, a definition, \
@@ -222,7 +229,7 @@ to cut that group down, then asks about what is left. Read that off the wording:
 among these", "first … then", "exclude any that …", two number conditions stacked, or two \
 different publishers named for two different facts. This holds however short the answer would be, \
 because your report ENDS the run and a partial answer becomes the user's final answer. Send those \
-to planner-agent or run_research_batch. It does not apply when the request lists the candidates \
+to planner-agent or {staged_route}. It does not apply when the request lists the candidates \
 itself, or when one source and one condition covers the whole request.
 
 SEQUENCING: FIRST, or not at all, and exactly ONCE. It is the opening move of the run or it is \
@@ -238,32 +245,50 @@ submit_final_report afterwards.
 
 IF IT FAILS: it answers instead with a short notice saying it could not complete the request. \
 That is the one and only case where research continues after this agent — treat the notice as \
-your signal to research the request yourself from scratch with run_research_batch and finish \
+your signal to research the request yourself from scratch with {escalation_route} and finish \
 normally. A returned answer is never a failure notice; do not escalate on one.
 
 DELEGATION BRIEF: none needed. The runtime hands it the user's original request verbatim, so pass \
 the user's request as `description` and add nothing else."""
 
 
-RESEARCHER_SUBAGENT_DESCRIPTION = """\
+def build_shallow_subagent_description(*, research_batch_enabled: bool) -> str:
+    """Build ``shallow-researcher``'s description for the configured research doors.
+
+    Two clauses name a door and must follow it. DO NOT CHOOSE IT points staged requests at a
+    fan-out path, and IF IT FAILS names the escalation route - and that second one is the only
+    escalation path in the whole design, because on success the runtime ends the run and the
+    orchestrator never gets another turn.
+
+    Args:
+        research_batch_enabled: Whether ``run_research_batch`` is offered on the orchestrator.
+
+    Returns:
+        The rendered description.
+    """
+    route = "run_research_batch" if research_batch_enabled else "researcher-agent"
+    return _SHALLOW_SUBAGENT_DESCRIPTION.format(
+        staged_route=route,
+        escalation_route=("run_research_batch" if research_batch_enabled else "researcher-agent delegations"),
+    )
+
+
+_RESEARCHER_SUBAGENT_DESCRIPTION = """\
 Investigate ONE topic end-to-end in an isolated context and return structured, cited findings.
 
 WHEN TO CHOOSE IT: the question is a PREREQUISITE CHAIN — you must resolve one fact before you can even write \
 the next query — because parallel workers cannot pass results to each other. Also choose it when a lookup has \
 already failed twice and you want a fresh, isolated attempt: give it the whole chain plus what you already \
 tried, so it does not repeat you. Give it exactly one topic, stated with full standalone context. For several \
-INDEPENDENT questions use run_research_batch instead. Prefer either path over searching yourself, even for a \
+INDEPENDENT questions {independent_route}. Prefer delegation over searching yourself, even for a \
 single fact: a worker's search trail is digested into notes before it reaches you instead of accumulating in \
 your context.
 
-SEQUENCING: runs after planning and before writing. A prerequisite chain is a dependent step, so send one \
-delegation per assistant turn and wait for its result before the next step. Never fan out two queries aimed at \
-the same unresolved fact, and never fan out a query whose text you cannot write until another has answered.
+SEQUENCING: runs after planning and before writing. {sequencing_rule} Never send two delegations aimed at \
+the same unresolved fact, and never send one whose text you cannot write until another has answered.
 
-WHAT IT PRODUCES: structured `ResearchNotes` for the one topic, carrying its own `evidence_judgment`. It is \
-also the worker behind every `run_research_batch` query. The runtime persists its notes under /shared/ and \
-registers their source locators exactly as the batch path does, so both paths leave the same evidence for \
-`writer-agent` and for `get_verified_sources`.
+WHAT IT PRODUCES: structured `ResearchNotes` for the one topic, carrying its own `evidence_judgment`. \
+{evidence_clause}
 
 DELEGATION BRIEF — it cannot see this conversation, so paste full standalone context:
     Research the following topic and return structured, cited notes:
@@ -272,6 +297,54 @@ contain>
     Already attempted, do not repeat: <the queries or targets already tried, and how each failed>
     Resolve the steps in order, carrying each answer into the next search. Return ResearchNotes with a source \
 locator for every claim, and state explicitly anything you could not verify."""
+
+
+def build_researcher_subagent_description(*, research_batch_enabled: bool) -> str:
+    """Build ``researcher-agent``'s description for the configured research doors.
+
+    Only called when the subagent itself is offered, so only the batch flag varies.
+
+    The SEQUENCING clause is the load-bearing one. With both doors open, "one delegation per
+    assistant turn" is correct: the batch tool owns parallelism and this path owns chains, so
+    fanning out here would duplicate the batch badly. With the batch gone this subagent is the
+    ONLY research path, and that same sentence would force the arm strictly serial - which would
+    make an A/B between the two doors measure serialization instead of architecture. So the
+    batch-off wording keeps the chain sequential while letting independent topics go out together
+    in one turn, which the request-wide guard already supports (it increments before awaiting, so
+    parallel calls in one turn share the ceiling).
+
+    Args:
+        research_batch_enabled: Whether ``run_research_batch`` is offered on the orchestrator.
+
+    Returns:
+        The rendered description.
+    """
+    if research_batch_enabled:
+        return _RESEARCHER_SUBAGENT_DESCRIPTION.format(
+            independent_route="use run_research_batch instead",
+            sequencing_rule=(
+                "A prerequisite chain is a dependent step, so send one delegation per assistant "
+                "turn and wait for its result before the next step."
+            ),
+            evidence_clause=(
+                "It is also the worker behind every `run_research_batch` query. The runtime "
+                "persists its notes under /shared/ and registers their source locators exactly as "
+                "the batch path does, so both paths leave the same evidence for `writer-agent` "
+                "and for `get_verified_sources`."
+            ),
+        )
+    return _RESEARCHER_SUBAGENT_DESCRIPTION.format(
+        independent_route="send one delegation per question in the SAME turn",
+        sequencing_rule=(
+            "A prerequisite chain is a dependent step, so wait for each step's result before "
+            "sending the next step of that same chain; independent topics may go out together in "
+            "one turn."
+        ),
+        evidence_clause=(
+            "The runtime persists its notes under /shared/ and registers their source locators, "
+            "so its evidence reaches `writer-agent` and `get_verified_sources` unchanged."
+        ),
+    )
 
 
 # Spliced into ``{delta_line}`` when a parent report is mounted. That flag is also one of the four
@@ -297,7 +370,7 @@ researching it yourself. Skip it when the request lists the candidates itself, w
 condition covers it, or when one batch of queries and an inline answer would fully satisfy the request.
 
 SEQUENCING: runs FIRST, or not at all — but it is not a default first step. When you can already write \
-every query the request needs, skip it and fan them out with run_research_batch; a plan buys nothing \
+every query the request needs, {fan_out_route}; a plan buys nothing \
 there and costs a full sub-agent run before any evidence arrives. Reach for it only when the request is \
 staged, and then weigh it ahead of shallow-researcher, which cannot fan out and whose report ends the \
 run. Planning after results are in hand is too late — the plan cannot account for what you found, so you \
@@ -322,16 +395,31 @@ qualify, then a query per member for the value that decides between them, plus t
 ranking rule that picks the final answer."""
 
 
-def build_planner_subagent_description(*, parent_report_context_available: bool) -> str:
+def build_planner_subagent_description(
+    *,
+    parent_report_context_available: bool,
+    research_batch_enabled: bool = True,
+) -> str:
     """Build ``planner-agent``'s description, including its request-conditional delegation brief.
 
     Args:
         parent_report_context_available: True when a parent report is mounted in ``/shared/`` for
             this request, which adds the delta-revision line to the brief and is itself one of the
             four routing triggers.
+        research_batch_enabled: Whether ``run_research_batch`` is offered. The SEQUENCING clause
+            names the fan-out path the orchestrator should prefer over planning, so it has to name
+            a door that exists.
+
+    Returns:
+        The rendered description.
     """
     return _PLANNER_SUBAGENT_DESCRIPTION.format(
         delta_line=_PLANNER_DELTA_BRIEF_LINE if parent_report_context_available else "",
+        fan_out_route=(
+            "skip it and fan them out with run_research_batch"
+            if research_batch_enabled
+            else "skip it and send them straight to researcher-agent, one delegation per query"
+        ),
     )
 
 
@@ -419,13 +507,46 @@ def build_writer_subagent_description(
 # harness profiles are process-global (_HARNESS_PROFILES is a module-level dict) and all three
 # research arms resolve to the same model key, so disabling it there would silently mutate the
 # deep and adaptive control arms too.
-GENERAL_PURPOSE_STUB_DESCRIPTION = """\
+_GENERAL_PURPOSE_STUB_DESCRIPTION = """\
 NOT AVAILABLE in this agent — it has no tools and cannot do anything. Never delegate to it. \
-For research use `researcher-agent`; for planning use `planner-agent`; for report writing use \
+For research use {research_route}; for planning use `planner-agent`; for report writing use \
 `writer-agent`."""
-GENERAL_PURPOSE_STUB_PROMPT = """\
+_GENERAL_PURPOSE_STUB_PROMPT = """\
 You have no tools and no role in this agent. Immediately reply with exactly: \
-'general-purpose is not available; use researcher-agent, planner-agent, or writer-agent instead.'"""
+'general-purpose is not available; use {research_route_plain}, planner-agent, or writer-agent instead.'"""
+
+
+def build_general_purpose_stub_description(*, researcher_subagent_enabled: bool) -> str:
+    """Build the inert stub's description, redirecting only to routes this agent actually holds.
+
+    Worth gating carefully despite being three lines: subagent descriptions render TWICE per
+    orchestrator turn (into the ``task`` schema and into the system prompt's "Available subagent
+    types" block), so a route name that no longer exists is re-sent to the model on every turn of
+    every run.
+
+    Args:
+        researcher_subagent_enabled: Whether ``researcher-agent`` is offered through ``task``.
+
+    Returns:
+        The rendered description.
+    """
+    return _GENERAL_PURPOSE_STUB_DESCRIPTION.format(
+        research_route="`researcher-agent`" if researcher_subagent_enabled else "`run_research_batch`",
+    )
+
+
+def build_general_purpose_stub_prompt(*, researcher_subagent_enabled: bool) -> str:
+    """Build the inert stub's system prompt, naming only routes this agent actually holds.
+
+    Args:
+        researcher_subagent_enabled: Whether ``researcher-agent`` is offered through ``task``.
+
+    Returns:
+        The rendered prompt.
+    """
+    return _GENERAL_PURPOSE_STUB_PROMPT.format(
+        research_route_plain="researcher-agent" if researcher_subagent_enabled else "run_research_batch",
+    )
 
 
 def _as_list_item(description: str) -> str:
@@ -452,7 +573,7 @@ def build_autonomous_orchestrator_middleware(
     *,
     tool_set: DeepResearchToolSet,
     source_registry_middleware: SourceRegistryMiddleware,
-    research_batch_tool_name: str = "run_research_batch",
+    research_batch_tool_name: str | None = "run_research_batch",
     finalize_tool_name: str = FINALIZE_TOOL_NAME,
 ) -> list[Any]:
     """Middleware for the autonomous orchestrator.
@@ -473,7 +594,12 @@ def build_autonomous_orchestrator_middleware(
       tool call; listing it later would make it inner and it would see nothing.
     """
     valid_tool_names = {tool.name for tool in tool_set.helper_tools}
-    valid_tool_names.add(research_batch_tool_name)
+    # ``None`` when run_research_batch is disabled for this deployment. Allowlisting a tool that is
+    # not bound cannot cause a misroute today (ToolNameSanitizationMiddleware does suffix-stripping
+    # plus a three-entry alias table, with no fuzzy matching), but a name in the allowlist asserts
+    # the tool exists, and that assertion should not outlive the tool.
+    if research_batch_tool_name:
+        valid_tool_names.add(research_batch_tool_name)
     valid_tool_names.add(finalize_tool_name)
     valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
     valid_tool_names.update(tool.name for tool in tool_set.research_source_tools)
@@ -498,8 +624,15 @@ def build_autonomous_research_middleware_set(
     source_registry_middleware: SourceRegistryMiddleware,
     researcher_loop_guard: ResearcherLoopGuardConfig,
     artifact_manager: object | None = None,
+    research_batch_tool: bool = True,
 ) -> DeepResearchMiddlewareSet:
-    """Build researcher, planner, writer, and orchestrator middleware stacks."""
+    """Build researcher, planner, writer, and orchestrator middleware stacks.
+
+    Args:
+        research_batch_tool: Whether ``run_research_batch`` is offered on the orchestrator. Only
+            reaches the sanitizer allowlist; every other use of the flag lives in the graph
+            builder.
+    """
 
     def common(extra_valid_tool_names: Sequence[str] = ()) -> list[Any]:
         return build_common_middleware(
@@ -530,6 +663,7 @@ def build_autonomous_research_middleware_set(
         orchestrator=build_autonomous_orchestrator_middleware(
             tool_set=tool_set,
             source_registry_middleware=source_registry_middleware,
+            research_batch_tool_name="run_research_batch" if research_batch_tool else None,
         ),
     )
 
@@ -538,6 +672,7 @@ def _researcher_subagent_spec(
     context: DeepResearchGraphContext,
     *,
     system_prompt: str,
+    research_batch_enabled: bool = True,
 ) -> dict[str, Any]:
     """Build the ``task``-reachable ``researcher-agent`` spec.
 
@@ -557,7 +692,9 @@ def _researcher_subagent_spec(
     """
     return {
         "name": RESEARCHER_AGENT,
-        "description": _as_list_item(RESEARCHER_SUBAGENT_DESCRIPTION),
+        "description": _as_list_item(
+            build_researcher_subagent_description(research_batch_enabled=research_batch_enabled)
+        ),
         "system_prompt": system_prompt,
         "tools": list(context.tool_set.researcher_tools),
         "model": context.llm_provider.get(LLMRole.RESEARCHER),
@@ -585,6 +722,8 @@ def build_autonomous_subagents(
     *,
     researcher_prompt: str,
     shallow_spec: dict[str, Any] | None = None,
+    research_batch_tool: bool = True,
+    researcher_subagent: bool = True,
 ) -> list[dict[str, Any]]:
     """Build the subagent specs: shallow, researcher, planner, writer, and the inert stub.
 
@@ -611,10 +750,19 @@ def build_autonomous_subagents(
             renders first in the ``task`` tool description and in the orchestrator's "Available
             subagent types" block — free reinforcement of the "call it first, or not at all"
             contract its description states.
+        research_batch_tool: Whether ``run_research_batch`` is offered. Does not add or remove a
+            spec here; it selects which door the planner's and researcher's descriptions name.
+        researcher_subagent: Whether to offer ``researcher-agent`` at all. When False its spec is
+            not built, so neither the ``task`` schema nor the "Available subagent types" block
+            mentions it, and the inert stub stops redirecting research there.
+
+    Returns:
+        The subagent specs, in render order.
     """
     planner_description = _as_list_item(
         build_planner_subagent_description(
             parent_report_context_available=context.parent_report_context_available,
+            research_batch_enabled=research_batch_tool,
         )
     )
     writer_description = _as_list_item(
@@ -631,14 +779,26 @@ def build_autonomous_subagents(
         elif spec["name"] == WRITER_AGENT:
             spec["description"] = writer_description
 
-    subagents.insert(0, _researcher_subagent_spec(context, system_prompt=researcher_prompt))
+    if researcher_subagent:
+        subagents.insert(
+            0,
+            _researcher_subagent_spec(
+                context,
+                system_prompt=researcher_prompt,
+                research_batch_enabled=research_batch_tool,
+            ),
+        )
     if shallow_spec is not None:
         subagents.insert(0, shallow_spec)
     subagents.append(
         {
             "name": GENERAL_PURPOSE_SUBAGENT_NAME,
-            "description": GENERAL_PURPOSE_STUB_DESCRIPTION,
-            "system_prompt": GENERAL_PURPOSE_STUB_PROMPT,
+            "description": build_general_purpose_stub_description(
+                researcher_subagent_enabled=researcher_subagent,
+            ),
+            "system_prompt": build_general_purpose_stub_prompt(
+                researcher_subagent_enabled=researcher_subagent,
+            ),
             # An explicit empty list, not an omitted key: deepagents inherits the parent's tools
             # when "tools" is absent from the spec, which is the hazard this stub exists to avoid.
             "tools": [],
@@ -710,6 +870,8 @@ def build_autonomous_research_graph(
     request_termination: AutonomousRequestTerminationConfig | None = None,
     resource_limits: DeepResearchResourceLimits | None = None,
     state_budget: StateBudgetLedger | None = None,
+    research_batch_tool: bool = True,
+    researcher_subagent: bool = True,
     shallow_subagent: bool = True,
     shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
     shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
@@ -722,6 +884,9 @@ def build_autonomous_research_graph(
         final_report_tracker: The run's dual-exit tracker. Owned by the agent (one per request)
             because both the writer's ``FinalReportCommitMiddleware`` and the orchestrator's
             ``submit_final_report`` must record onto the same instance.
+        research_batch_tool: Whether to offer ``run_research_batch`` on the orchestrator.
+        researcher_subagent: Whether to offer ``researcher-agent`` through ``task``. At least one
+            of these two must be True.
         shallow_subagent: Whether to offer the ``shallow-researcher`` sub-agent for this request.
         shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-run.
         shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-run.
@@ -729,7 +894,18 @@ def build_autonomous_research_graph(
     Returns:
         The compiled runnable plus the run-scoped shallow capture, as an
         :class:`AutonomousResearchGraphRun`.
+
+    Raises:
+        ValueError: If both delegated-research doors are disabled.
     """
+    # Duplicated from AutonomousResearchAgentConfig's validator on purpose: this factory is called
+    # directly by the test suite and by any future caller that does not go through the NAT config
+    # layer, and a graph with neither door would fail silently at answer time rather than here.
+    if not (research_batch_tool or researcher_subagent):
+        raise ValueError(
+            "build_autonomous_research_graph requires at least one delegated research path: "
+            "research_batch_tool or researcher_subagent."
+        )
     cross_cutting_middleware = [
         FilesystemToolCallGuardMiddleware(),
         *runtime_visibility_middleware(runtime),
@@ -784,32 +960,40 @@ def build_autonomous_research_graph(
         researcher_max_identical_source_calls=researcher_loop_guard.max_identical_source_calls,
         researcher_loop_guard_enabled=researcher_loop_guard.enabled,
     )
-    researcher_runnable = build_researcher_runnable(
-        researcher_model=context.llm_provider.get(LLMRole.RESEARCHER),
-        researcher_tools=context.tool_set.researcher_tools,
-        system_prompt=researcher_prompt,
-        researcher_middleware=[
-            *context.middleware_set.researcher,
-            FinalReportOwnershipGuardMiddleware(),
-            StateMutationGuardMiddleware(
-                writer=False,
-                sandbox_enabled=context.runtime.execution_enabled,
-            ),
-        ],
-        skill_sources=context.skill_sources(RESEARCHER_AGENT),
-        backend=context.backend,
-        visibility_middleware=context.visibility_middleware,
-        filesystem_permissions=context.permissions(RESEARCHER_AGENT),
-    )
-    research_batch_tool = build_autonomous_research_batch_tool(
-        researcher_runnable=researcher_runnable,
-        backend=context.backend,
-        callbacks=callbacks,
-        max_research_concurrency=max_research_concurrency,
-        resource_limits=context.resource_limits,
-        state_budget=context.state_budget,
-        source_registry_middleware=source_registry_middleware,
-    )
+    # `researcher_runnable` exists ONLY to be the worker behind run_research_batch: the
+    # task-reachable researcher-agent spec builds its own agent from `context`. So when the batch
+    # door is closed both are skipped, rather than building a runnable nothing will ever invoke.
+    # The researcher prompt above is still rendered unconditionally - the spec needs it, and the
+    # both-off guard means at least one consumer always exists.
+    research_batch_tool_obj = None
+    if research_batch_tool:
+        researcher_runnable = build_researcher_runnable(
+            researcher_model=context.llm_provider.get(LLMRole.RESEARCHER),
+            researcher_tools=context.tool_set.researcher_tools,
+            system_prompt=researcher_prompt,
+            researcher_middleware=[
+                *context.middleware_set.researcher,
+                FinalReportOwnershipGuardMiddleware(),
+                StateMutationGuardMiddleware(
+                    writer=False,
+                    sandbox_enabled=context.runtime.execution_enabled,
+                ),
+            ],
+            skill_sources=context.skill_sources(RESEARCHER_AGENT),
+            backend=context.backend,
+            visibility_middleware=context.visibility_middleware,
+            filesystem_permissions=context.permissions(RESEARCHER_AGENT),
+        )
+        research_batch_tool_obj = build_autonomous_research_batch_tool(
+            researcher_runnable=researcher_runnable,
+            backend=context.backend,
+            callbacks=callbacks,
+            max_research_concurrency=max_research_concurrency,
+            resource_limits=context.resource_limits,
+            state_budget=context.state_budget,
+            source_registry_middleware=source_registry_middleware,
+            researcher_subagent_enabled=researcher_subagent,
+        )
     submit_final_report_tool = build_submit_final_report_tool(
         backend=context.backend,
         tracker=final_report_tracker,
@@ -839,17 +1023,23 @@ def build_autonomous_research_graph(
             # Captured once, at build time, from the request's own messages, so the sub-agent
             # always receives the user's actual question rather than an orchestrator paraphrase.
             original_query=last_human_text(state) or "",
-            description=_as_list_item(SHALLOW_SUBAGENT_DESCRIPTION),
+            description=_as_list_item(build_shallow_subagent_description(research_batch_enabled=research_batch_tool)),
+            # The failure notice is the ONLY way research continues after a shallow attempt, so it
+            # has to name a door this deployment actually holds.
+            escalation_route=(
+                "run_research_batch" if research_batch_tool else 'task(subagent_type="researcher-agent", ...)'
+            ),
             max_llm_turns=shallow_subagent_max_llm_turns,
             max_tool_iterations=shallow_subagent_max_tool_iterations,
         )
 
-    # The full menu, unconditionally. Source tools sit alongside run_research_batch and task, and
-    # the model decides how to research from the descriptions alone.
+    # The full menu the configured doors allow. Source tools sit alongside run_research_batch and
+    # task, and the model decides how to research from the descriptions alone. Nothing is hidden at
+    # runtime; a missing entry here means the door was never built for this deployment.
     research_source_tools = list(context.tool_set.research_source_tools)
     orchestrator_tools = [
         *context.tool_set.helper_tools,
-        research_batch_tool,
+        *([research_batch_tool_obj] if research_batch_tool_obj is not None else []),
         submit_final_report_tool,
         *research_source_tools,
     ]
@@ -877,6 +1067,11 @@ def build_autonomous_research_graph(
         clarifier_result=context.state.clarifier_result,
         execution_enabled=context.runtime.execution_enabled,
         parent_report_context_available=context.parent_report_context_available,
+        # The prompt names both delegated-research doors by hand, so it has to know which exist.
+        # render_prompt uses StrictUndefined: a `{% if %}` on either name that is not supplied here
+        # raises at agent-node time, long after startup and every build-time test.
+        research_batch_enabled=research_batch_tool,
+        researcher_subagent_enabled=researcher_subagent,
     )
 
     orchestrator_middleware = [
@@ -888,6 +1083,9 @@ def build_autonomous_research_graph(
         ),
         TodoQuotaMiddleware(resource_limits=context.resource_limits),
         # Evidence-state seams: make the three research paths equivalent in what they leave behind.
+        # Wired in every arm on purpose. It is a no-op when researcher-agent is not offered (it
+        # gates on subagent_type), and when run_research_batch is not offered it is the ONLY thing
+        # persisting research notes and registering their locators.
         ResearcherTaskPersistenceMiddleware(
             backend=context.backend,
             state_budget=context.state_budget,
@@ -913,6 +1111,8 @@ def build_autonomous_research_graph(
             AutonomousOrchestratorLoopGuardMiddleware(
                 config=request_termination,
                 source_tool_names=source_tool_names,
+                research_batch_enabled=research_batch_tool,
+                researcher_subagent_enabled=researcher_subagent,
             )
         )
     # Deliberately NOT RequiredWriterDelegationMiddleware: that would force every run through the
@@ -927,6 +1127,8 @@ def build_autonomous_research_graph(
             context,
             researcher_prompt=researcher_prompt,
             shallow_spec=shallow_spec,
+            research_batch_tool=research_batch_tool,
+            researcher_subagent=researcher_subagent,
         ),
         store=InMemoryStore(),
         middleware=context.middleware(orchestrator_middleware),

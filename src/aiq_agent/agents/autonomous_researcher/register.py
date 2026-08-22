@@ -39,6 +39,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepResearchSandboxConfig
 from aiq_agent.agents.deep_researcher.deepagents_runtime import DeepResearchSkillsConfig
@@ -148,6 +149,37 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         ge=1,
         description="Maximum concrete inputs accepted by batch-capable source tool wrappers.",
     )
+    # --- Delegated research paths (eval A/B) -----------------------------------------------------
+    # Two doors onto one capability. `run_research_batch` fans N independent questions out to N
+    # isolated workers in a single call; `task(subagent_type="researcher-agent")` hands ONE topic to
+    # one worker that may hop between searches. Both are default-on, which is the shipped behavior.
+    #
+    # Turning exactly one off is an A/B arm, not a supported production mode. Every string that
+    # names a door - the orchestrator prompt, the subagent descriptions, the run_research_batch
+    # description, the shallow failure notice, and the loop guard's blocked-tool messages - is gated
+    # on these flags, because in this agent descriptions ARE the routing logic: a stale mention
+    # makes the model call a tool that is not bound, which costs an orchestrator turn and no
+    # recovery instruction. See the eval-fairness note in configs/config_autonomous_frag.yml for why
+    # the arms are not equal-budget as shipped.
+    research_batch_tool: bool = Field(
+        default=True,
+        description=(
+            "Offer the run_research_batch tool, which fans several independent research questions "
+            "out to isolated workers in one call. Disabling it removes the tool, its sanitizer "
+            "allowlist entry, and every prompt or description that names it. Cannot be disabled "
+            "together with researcher_subagent."
+        ),
+    )
+    researcher_subagent: bool = Field(
+        default=True,
+        description=(
+            "Offer the researcher-agent sub-agent through task(), which investigates ONE topic "
+            "end to end in an isolated context and is the only single-call path for a prerequisite "
+            "chain. Disabling it removes the subagent spec and every prompt or description that "
+            "names it; task() itself always remains, because task(writer-agent) is a run exit. "
+            "Cannot be disabled together with research_batch_tool."
+        ),
+    )
     # Deliberately named `shallow_subagent`, not the adaptive arm's `single_shot_shallow_subagent`:
     # there is no effort tier to qualify it with here. Default-on because a request one agent can
     # finish is the common case, and answering it through the full research cycle is pure overhead.
@@ -208,6 +240,26 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         if isinstance(value, dict):
             return DeepResearchSandboxConfig.model_validate(value)
         return value
+
+    @model_validator(mode="after")
+    def _require_a_delegated_research_path(self) -> "AutonomousResearchAgentConfig":
+        """Reject the one flag combination that leaves the orchestrator unable to research.
+
+        Not a stylistic guard. With both doors off the orchestrator's only retrieval is its own
+        direct source-tool calls, capped at ``request_termination.max_direct_source_calls``
+        (default 2), and the shallow-researcher is first-turn-only and ends the run when it
+        succeeds. The agent would load and serve, then answer essentially every request from an
+        exhausted budget - a silent quality collapse rather than a startup failure.
+        """
+        if not (self.research_batch_tool or self.researcher_subagent):
+            raise ValueError(
+                "research_batch_tool and researcher_subagent cannot both be false: the "
+                "orchestrator would hold no delegated research path. Its own direct source-tool "
+                "calls are capped at request_termination.max_direct_source_calls (default 2) and "
+                "the shallow-researcher is first-turn-only and terminal, so the agent could not "
+                "research anything. Enable at least one."
+            )
+        return self
 
 
 @register_function(config_type=AutonomousResearchAgentConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
@@ -292,6 +344,8 @@ async def autonomous_research_agent(config: AutonomousResearchAgentConfig, build
             max_research_concurrency=config.max_research_concurrency,
             max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
             max_source_tool_batch_size=config.max_source_tool_batch_size,
+            research_batch_tool=config.research_batch_tool,
+            researcher_subagent=config.researcher_subagent,
             shallow_subagent=config.shallow_subagent,
             shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
             shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,

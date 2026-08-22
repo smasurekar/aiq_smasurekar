@@ -139,7 +139,7 @@ def _shallow_system_prompt() -> str | None:
     return f"{base}\n\n{SHALLOW_ANSWER_CONTRACT}"
 
 
-def _failure_notice(capture: ShallowSubagentCapture) -> str:
+def _failure_notice(capture: ShallowSubagentCapture, *, escalation_route: str) -> str:
     """Render the orchestrator-facing notice for a failed shallow attempt.
 
     Deliberately category-level: it names the exception *type* and the remaining budget but never
@@ -148,18 +148,27 @@ def _failure_notice(capture: ShallowSubagentCapture) -> str:
     The "what to do next" half of the notice is the escalation instruction. It is the *only*
     escalation path in this design: on success the run ends inside the runtime and the
     orchestrator never gets another turn, so a failure notice is the sole signal that ordinary
-    research is still needed.
+    research is still needed. That makes ``escalation_route`` load-bearing rather than cosmetic —
+    naming a door this deployment does not hold would strand the run here.
+
+    Args:
+        capture: Run-scoped capture, read for the error category and the remaining attempts.
+        escalation_route: The delegated-research door to send the orchestrator to, as the model
+            should write it.
+
+    Returns:
+        The notice text.
     """
     remaining = max(0, MAX_SHALLOW_ATTEMPTS - capture.attempts)
     if remaining:
         next_step = (
             f"You may retry the shallow-researcher {remaining} more time(s). If it fails again, "
-            "research the request yourself with run_research_batch."
+            f"research the request yourself with {escalation_route}."
         )
     else:
         next_step = (
             "No further shallow-researcher attempts are available. Research the request yourself "
-            "with run_research_batch and finish through submit_final_report."
+            f"with {escalation_route} and finish through submit_final_report."
         )
     return f"The shallow researcher did not complete this request ({capture.error_type}). {next_step}"
 
@@ -268,6 +277,7 @@ def build_shallow_researcher_subagent(
     source_registry_middleware: SourceRegistryMiddleware,
     original_query: str | None,
     description: str,
+    escalation_route: str = "run_research_batch",
     max_llm_turns: int,
     max_tool_iterations: int,
 ) -> dict[str, Any]:
@@ -287,6 +297,9 @@ def build_shallow_researcher_subagent(
             and the orchestrator system prompt. Supplied by the factory rather than defined here
             because in this agent the description *is* the routing logic and belongs beside the
             other subagent descriptions it competes with.
+        escalation_route: The delegated-research door named in the failure notice. Supplied by the
+            factory for the same reason as ``description``: which doors exist is a build-time
+            configuration decision this module does not own.
         max_llm_turns: Shallow agent LLM-turn bound.
         max_tool_iterations: Shallow agent tool-call bound.
 
@@ -312,7 +325,7 @@ def build_shallow_researcher_subagent(
         # already failed systematically. Returning the notice costs nothing and repeats the
         # escalation instruction.
         if capture.exhausted:
-            return {"messages": [AIMessage(content=_failure_notice(capture))]}
+            return {"messages": [AIMessage(content=_failure_notice(capture, escalation_route=escalation_route))]}
 
         # ---- 1. Input query -------------------------------------------------------------
         # DeepAgents removes the parent's `messages` key and replaces it with one HumanMessage
@@ -364,7 +377,7 @@ def build_shallow_researcher_subagent(
                 capture.attempts,
                 MAX_SHALLOW_ATTEMPTS,
             )
-            return {"messages": [AIMessage(content=_failure_notice(capture))]}
+            return {"messages": [AIMessage(content=_failure_notice(capture, escalation_route=escalation_route))]}
         finally:
             if token is not None:
                 reset_session_registry(token)

@@ -81,6 +81,7 @@ def _build_subagent(
     capture: ShallowSubagentCapture | None = None,
     original_query: str | None = ORIGINAL_QUERY,
     registry_middleware: SourceRegistryMiddleware | None = None,
+    escalation_route: str = "run_research_batch",
 ):
     """Build the sub-agent spec with a stubbed ``ShallowResearcherAgent``.
 
@@ -113,6 +114,7 @@ def _build_subagent(
             source_registry_middleware=registry_middleware,
             original_query=original_query,
             description=DESCRIPTION,
+            escalation_route=escalation_route,
             max_llm_turns=10,
             max_tool_iterations=5,
         )
@@ -656,3 +658,33 @@ class TestZeroTurnExit:
         assert len(calls) == 2, "the orchestrator must get a turn to escalate"
         assert not built.shallow_capture.has_report
         assert tracker.inline_digest is not None, "the orchestrator finished the run itself"
+
+
+class TestFailureNoticeEscalationRoute:
+    """The notice is the only escalation path, so it must name a door this build actually holds."""
+
+    @pytest.mark.parametrize(
+        "route",
+        ["run_research_batch", 'task(subagent_type="researcher-agent", ...)'],
+    )
+    async def test_the_configured_route_is_what_the_notice_names(self, route):
+        spec, _, _ = _build_subagent(
+            run_side_effect=lambda _n: RuntimeError("boom"),
+            escalation_route=route,
+        )
+        result = await spec["runnable"].ainvoke(_subagent_state())
+        assert route in result["messages"][-1].content
+
+    async def test_the_exhausted_attempt_notice_also_carries_the_route(self):
+        """Both branches of the notice escalate; only one of them was ever exercised before."""
+        capture = ShallowSubagentCapture()
+        capture.attempts = MAX_SHALLOW_ATTEMPTS
+        spec, _, _ = _build_subagent(
+            run_side_effect=lambda _n: RuntimeError("boom"),
+            capture=capture,
+            escalation_route="researcher-agent",
+        )
+        result = await spec["runnable"].ainvoke(_subagent_state())
+        content = result["messages"][-1].content
+        assert "researcher-agent" in content
+        assert "run_research_batch" not in content

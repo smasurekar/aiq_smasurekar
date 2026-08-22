@@ -108,20 +108,56 @@ _GENERATED_RETRY_MARKER = "aiq_generated_retry"
 
 _NOTE_SLUG_MAX_LENGTH = 40
 
+
+def _delegation_route_phrase(*, batch_enabled: bool, subagent_enabled: bool) -> str:
+    """Return the delegated-research route(s) a guard message may legitimately point at.
+
+    Three guard messages tell the orchestrator "your own searching is done, delegate instead", and
+    each names a door verbatim. Either door can be switched off for an A/B arm, so the phrase has
+    to be built rather than written inline: a message that offers a tool which is not bound is
+    worse than no message, because it fires exactly when the model has run out of alternatives.
+
+    Args:
+        batch_enabled: Whether ``run_research_batch`` is offered.
+        subagent_enabled: Whether ``researcher-agent`` is offered through ``task``.
+
+    Returns:
+        The route clause, as the model should write the call.
+    """
+    if batch_enabled and subagent_enabled:
+        return '`run_research_batch`, or give a dependent chain to `task(subagent_type="researcher-agent", ...)`'
+    if batch_enabled:
+        return "`run_research_batch`"
+    return '`task(subagent_type="researcher-agent", ...)`'
+
+
+def _direct_source_budget_nudge(*, batch_enabled: bool, subagent_enabled: bool) -> str:
+    """Build the in-context warning appended to the last allowed direct source-tool result.
+
+    Args:
+        batch_enabled: Whether ``run_research_batch`` is offered.
+        subagent_enabled: Whether ``researcher-agent`` is offered through ``task``.
+
+    Returns:
+        The nudge text, ready to append to a tool result.
+    """
+    route = _delegation_route_phrase(batch_enabled=batch_enabled, subagent_enabled=subagent_enabled)
+    return (
+        "\n\n[SYSTEM — direct-search budget reached: you have used your own source-tool calls for "
+        "this request, and those tools are now withdrawn. Research is NOT over. Delegate any "
+        f"remaining lookup through {route} — a worker's search trail is digested before "
+        "it reaches you instead of accumulating in your context. Only finalize once the evidence "
+        "is sufficient.]"
+    )
+
+
 # Appended (not overwritten) to the direct source-tool result that spends the last of the
 # orchestrator's own search budget. Appending preserves that call's evidence — the model still
 # needs it — while explaining in-context why the source tools are about to disappear. The
 # withdrawal in ``_filter_tools`` is the hard guarantee; this is the explanation. Mirrors
 # ``_SINGLE_SHOT_BUDGET_NUDGE`` in the adaptive arm, but points at delegation rather than at
 # finalization: direct search closing does not mean research is over here.
-_DIRECT_SOURCE_BUDGET_NUDGE = (
-    "\n\n[SYSTEM — direct-search budget reached: you have used your own source-tool calls for "
-    "this request, and those tools are now withdrawn. Research is NOT over. Delegate any "
-    "remaining lookup through `run_research_batch`, or give a dependent chain to "
-    '`task(subagent_type="researcher-agent", ...)` — a worker\'s search trail is digested before '
-    "it reaches you instead of accumulating in your context. Only finalize once the evidence is "
-    "sufficient.]"
-)
+# Built per-request by ``_direct_source_budget_nudge`` so it names only the doors that exist.
 
 
 # =================================================================================================
@@ -655,7 +691,7 @@ class AutonomousFinalizationMiddleware(AgentMiddleware):
             "This run has not finished: no final report was committed. Do not perform or retry research. "
             "Finish now using whichever exit matches the work you already did:\n"
             "- If you wrote the answer yourself, call submit_final_report(markdown=<the complete final answer>, "
-            "researched=<true if any source tool, researcher-agent delegation, or run_research_batch ran>).\n"
+            "researched=<true if any research ran this run, whether you searched directly or delegated>).\n"
             f"- If writer-agent already wrote {FINAL_REPORT_STATE_PATHS[0]}, return only its completion marker.\n"
             "- If you delegated to writer-agent and it did not commit, delegate once more with the plan, research "
             "notes, verified sources, and explicit evidence gaps already available.\n"
@@ -840,10 +876,37 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
     query arguments.
     """
 
-    def __init__(self, *, config: AutonomousRequestTerminationConfig, source_tool_names: frozenset[str]) -> None:
-        """Create the request-scoped guard for one autonomous run."""
+    def __init__(
+        self,
+        *,
+        config: AutonomousRequestTerminationConfig,
+        source_tool_names: frozenset[str],
+        research_batch_enabled: bool = True,
+        researcher_subagent_enabled: bool = True,
+    ) -> None:
+        """Create the request-scoped guard for one autonomous run.
+
+        Args:
+            config: The request-wide budgets, deadline, and recursion ceiling.
+            source_tool_names: Names of the orchestrator's own source tools, for the direct-call
+                budget and the finalizing withdrawal.
+            research_batch_enabled: Whether ``run_research_batch`` is offered this run.
+            researcher_subagent_enabled: Whether ``researcher-agent`` is offered this run. Both
+                flags only affect the *wording* of blocked-tool messages: every ceiling applies
+                identically regardless of which door spends it.
+        """
         self._config = config
         self._source_tool_names = frozenset(source_tool_names)
+        self._research_batch_enabled = research_batch_enabled
+        self._researcher_subagent_enabled = researcher_subagent_enabled
+        self._delegation_route = _delegation_route_phrase(
+            batch_enabled=research_batch_enabled,
+            subagent_enabled=researcher_subagent_enabled,
+        )
+        self._direct_source_budget_nudge = _direct_source_budget_nudge(
+            batch_enabled=research_batch_enabled,
+            subagent_enabled=researcher_subagent_enabled,
+        )
         # Short opaque per-request tag for correlating log lines without leaking content.
         self._request_tag = uuid4().hex[:12]
         self._phase: str = "active"
@@ -1005,8 +1068,8 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
                 f"Direct-search budget reached "
                 f"({self._direct_source_call_count}/{self._config.max_direct_source_calls} calls). Your own "
                 "source-tool calls are spent for this request, but research is not over. Delegate the "
-                "remaining lookups through run_research_batch, or give a dependent chain to "
-                'task(subagent_type="researcher-agent", ...). Finalize only once the evidence is sufficient.',
+                f"remaining lookups through {self._delegation_route}. Finalize only once the evidence "
+                "is sufficient.",
             )
 
         signature = _canonical_direct_source_signature(name, tool_call.get("args", {}))
@@ -1017,7 +1080,7 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
                 "Duplicate direct search blocked: you have already run this exact search in this request, and "
                 "repeating it returns the same results while doubling their cost in your context. Change the "
                 "target rather than the wording — the source organization, a page that quotes the figure, or a "
-                "mirror — or delegate the lookup through run_research_batch.",
+                f"mirror — or delegate the lookup through {self._delegation_route}.",
             )
 
         self._direct_source_call_count += 1
@@ -1035,12 +1098,24 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
         # and every one of them should still carry the explanation.
         if self._direct_budget_spent():
             try:
-                result = result.model_copy(update={"content": f"{result.content}{_DIRECT_SOURCE_BUDGET_NUDGE}"})
+                result = result.model_copy(update={"content": f"{result.content}{self._direct_source_budget_nudge}"})
             except Exception:
                 # Non-Pydantic or immutable result: the withdrawal in _filter_tools still enforces
                 # the cap, so a missing nudge is a soft degradation rather than a failure.
                 pass
         return result
+
+    @property
+    def _research_call_accounting(self) -> str:
+        """Describe what the shared research-call ceiling is counting, for a blocked message.
+
+        The ceiling itself never changes; only how many doors feed it does.
+        """
+        if self._research_batch_enabled and self._researcher_subagent_enabled:
+            return "counting both run_research_batch and researcher-agent delegations"
+        if self._research_batch_enabled:
+            return "counting run_research_batch calls"
+        return "counting researcher-agent delegations"
 
     async def _guard_delegation(self, tool_call, request, handler):
         """Spend the shared research budget on ``task(researcher-agent)``.
@@ -1074,7 +1149,7 @@ class AutonomousOrchestratorLoopGuardMiddleware(AgentMiddleware):
             return self._blocked_result(
                 tool_call,
                 f"Research budget reached ({self._batch_call_count}/{self._config.max_batch_calls} research "
-                "calls, counting both run_research_batch and researcher-agent delegations). No further "
+                f"calls, {self._research_call_accounting}). No further "
                 "research will run. Call get_verified_sources and submit_final_report to finalize from the "
                 "evidence already gathered; record unsupported requirements as gaps.",
             )
