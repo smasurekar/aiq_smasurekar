@@ -440,10 +440,12 @@ def _config(**over) -> AutonomousRequestTerminationConfig:
 
 class TestAutonomousOrchestratorLoopGuard:
     @staticmethod
-    def _guard(**over):
+    def _guard(*, research_batch_enabled=True, researcher_subagent_enabled=True, **over):
         return AutonomousOrchestratorLoopGuardMiddleware(
             config=_config(**over),
             source_tool_names=frozenset({"web_search_tool"}),
+            research_batch_enabled=research_batch_enabled,
+            researcher_subagent_enabled=researcher_subagent_enabled,
         )
 
     @pytest.mark.asyncio
@@ -783,3 +785,73 @@ def test_finalization_retry_marker_matches_the_upstream_convention():
     result = middleware._check_after_model({"messages": [AIMessage(content="x")], "files": {}})
     assert isinstance(result["messages"][0], HumanMessage)
     assert result["messages"][0].additional_kwargs["aiq_generated_retry"] == "autonomous_finalization"
+
+
+class TestGuardMessagesNameOnlyConfiguredDoors:
+    """Blocked-tool messages tell the orchestrator where to go instead. That has to be reachable.
+
+    These messages fire precisely when the model has run out of the alternative it was using, so a
+    message naming a door this deployment does not hold is worse than no message at all.
+    """
+
+    ARMS = [("both", True, True), ("batch_only", True, False), ("subagent_only", False, True)]
+
+    @staticmethod
+    def _guard(*, batch, subagent, **over):
+        return AutonomousOrchestratorLoopGuardMiddleware(
+            config=_config(**over),
+            source_tool_names=frozenset({"web_search_tool"}),
+            research_batch_enabled=batch,
+            researcher_subagent_enabled=subagent,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), ARMS)
+    async def test_the_direct_budget_nudge_points_only_at_a_live_door(self, arm, batch, subagent):
+        guard = self._guard(batch=batch, subagent=subagent, max_direct_source_calls=1)
+        handler = AsyncMock(return_value=ToolMessage(content="findings", tool_call_id="src_1", name="web_search_tool"))
+        content = (await guard.awrap_tool_call(_source_request("a"), handler)).content
+        assert "direct-search budget reached" in content
+        assert ("run_research_batch" in content) is batch
+        assert ("researcher-agent" in content) is subagent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), ARMS)
+    async def test_the_spent_direct_budget_block_points_only_at_a_live_door(self, arm, batch, subagent):
+        guard = self._guard(batch=batch, subagent=subagent, max_direct_source_calls=1)
+        handler = AsyncMock(return_value=ToolMessage(content="findings", tool_call_id="s", name="web_search_tool"))
+        await guard.awrap_tool_call(_source_request("a"), handler)
+        blocked = await guard.awrap_tool_call(_source_request("b"), handler)
+        assert blocked.status == "error"
+        assert "Direct-search budget reached" in blocked.content
+        assert ("run_research_batch" in blocked.content) is batch
+        assert ("researcher-agent" in blocked.content) is subagent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("arm", "batch", "subagent"), ARMS)
+    async def test_the_duplicate_direct_block_points_only_at_a_live_door(self, arm, batch, subagent):
+        """The sharpest one: its only advice besides "change the target" is to delegate."""
+        guard = self._guard(
+            batch=batch,
+            subagent=subagent,
+            max_direct_source_calls=5,
+            max_identical_direct_source_calls=1,
+        )
+        handler = AsyncMock(return_value=ToolMessage(content="findings", tool_call_id="s", name="web_search_tool"))
+        await guard.awrap_tool_call(_source_request("same"), handler)
+        blocked = await guard.awrap_tool_call(_source_request("same"), handler)
+        assert blocked.status == "error"
+        assert "Duplicate direct search blocked" in blocked.content
+        assert ("run_research_batch" in blocked.content) is batch
+        assert ("researcher-agent" in blocked.content) is subagent
+
+    @pytest.mark.asyncio
+    async def test_the_shared_ceiling_describes_only_the_doors_that_feed_it(self):
+        """`max_batch_calls` is one ceiling; how many doors spend it is configuration."""
+        guard = self._guard(batch=False, subagent=True, max_batch_calls=1)
+        handler = AsyncMock(return_value="notes")
+        await guard.awrap_tool_call(_task_request("researcher-agent"), handler)
+        blocked = await guard.awrap_tool_call(_task_request("researcher-agent"), handler)
+        assert blocked.status == "error"
+        assert "counting researcher-agent delegations" in blocked.content
+        assert "run_research_batch" not in blocked.content

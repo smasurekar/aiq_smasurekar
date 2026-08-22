@@ -180,3 +180,65 @@ class TestSubmitFinalReport:
 
     def test_return_direct_ends_the_react_loop(self):
         assert build_submit_final_report_tool(backend=None, tracker=None).return_direct is True
+
+
+class TestResearchDoorFlags:
+    """`research_batch_tool` / `researcher_subagent` gate the two delegated-research doors."""
+
+    def test_both_doors_default_on(self):
+        fields = AutonomousResearchAgentConfig.model_fields
+        assert fields["research_batch_tool"].default is True
+        assert fields["researcher_subagent"].default is True
+
+    @pytest.mark.parametrize(
+        ("batch", "subagent"),
+        [(True, True), (True, False), (False, True)],
+    )
+    def test_each_single_door_arm_validates(self, batch, subagent):
+        config = AutonomousResearchAgentConfig(
+            orchestrator_llm="llm",
+            research_batch_tool=batch,
+            researcher_subagent=subagent,
+        )
+        assert config.research_batch_tool is batch
+        assert config.researcher_subagent is subagent
+
+    def test_both_doors_off_is_rejected(self):
+        """Not a stylistic guard: the agent would load, serve, and answer from an exhausted budget.
+
+        With neither door the orchestrator's only retrieval is its own direct source-tool calls,
+        capped at ``max_direct_source_calls`` (default 2), and the shallow-researcher is
+        first-turn-only and ends the run when it succeeds. That is a silent quality collapse, so it
+        has to fail at config load rather than at answer time.
+        """
+        with pytest.raises(ValidationError, match="cannot both be false"):
+            AutonomousResearchAgentConfig(
+                orchestrator_llm="llm",
+                research_batch_tool=False,
+                researcher_subagent=False,
+            )
+
+    def test_door_knobs_are_forwarded_to_the_agent(self):
+        """A config knob that never reaches the constructor is silently inert."""
+        source = Path(register_module.__file__).read_text(encoding="utf-8")
+        for forwarded in (
+            "research_batch_tool=config.research_batch_tool",
+            "researcher_subagent=config.researcher_subagent",
+        ):
+            assert forwarded in source, forwarded
+
+
+class TestShippedConfigsDeclareBothDoors:
+    """Both shipped configs must be a control arm, not an A/B arm."""
+
+    FRESHQA_PATH = REPO_ROOT / "frontends/benchmarks/freshqa/configs/config_autonomous_frag_freshqa.yml"
+
+    @pytest.mark.parametrize("path", [CONFIG_PATH, FRESHQA_PATH])
+    def test_both_doors_are_enabled_and_the_config_validates(self, path):
+        if not path.exists():
+            pytest.skip(f"{path.name} is not present in this checkout")
+        agent = dict(yaml.safe_load(path.read_text(encoding="utf-8"))["functions"]["autonomous_research_agent"])
+        agent.pop("_type")
+        config = AutonomousResearchAgentConfig(**agent)
+        assert config.research_batch_tool is True
+        assert config.researcher_subagent is True

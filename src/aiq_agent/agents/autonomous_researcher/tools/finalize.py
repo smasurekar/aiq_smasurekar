@@ -33,9 +33,10 @@ Differences from ``adaptive_researcher.tools.finalize``, which this is adapted f
 
 * no ``tier=`` argument and no tier metadata — the autonomous agent has no effort tiers;
 * no ``declare_effort_tier`` tool at all;
-* ``researched`` is defined over *any* research path (a direct source-tool call, a
-  ``task(researcher-agent)`` delegation, or a ``run_research_batch`` fan-out), not only batch
-  research, because the autonomous orchestrator holds all three.
+* ``researched`` is defined over *any* research path — a direct source-tool call or any
+  delegated research — not only batch research, because the autonomous orchestrator holds
+  several. Stated route-neutrally on purpose: which delegated-research doors this deployment
+  offers is configurable, and this argument's meaning does not depend on the answer.
 """
 
 from __future__ import annotations
@@ -146,8 +147,8 @@ def build_submit_final_report_tool(
                 a cited report using numeric citations ([1], [2], ...) drawn from
                 get_verified_sources.
             researched: True when the answer is backed by ANY research this run — a source tool
-                you called directly, a `task(subagent_type="researcher-agent")` delegation, or a
-                `run_research_batch` fan-out. Citations must then verify. False ONLY for a
+                you called directly, or any research you delegated. Citations must then verify.
+                False ONLY for a
                 deliberate no-research answer (chit-chat, a transparent capability limitation, or
                 a trivial timeless fact answered from your own knowledge); that skips citation
                 verification for this answer. An honest "I could not verify this" after research

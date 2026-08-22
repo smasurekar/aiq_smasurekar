@@ -109,6 +109,8 @@ class AutonomousResearcherAgent:
         max_research_concurrency: int = DEFAULT_MAX_RESEARCH_CONCURRENCY,
         max_concurrent_source_tool_calls: int = DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS,
         max_source_tool_batch_size: int = DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE,
+        research_batch_tool: bool = True,
+        researcher_subagent: bool = True,
         shallow_subagent: bool = True,
         shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
         shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
@@ -140,6 +142,14 @@ class AutonomousResearcherAgent:
             max_concurrent_source_tool_calls: Shared source-tool concurrency limit across
                 researcher workers.
             max_source_tool_batch_size: Maximum concrete inputs per batch-capable source tool call.
+            research_batch_tool: Offer ``run_research_batch``, which fans several independent
+                questions out to isolated workers in one call. Disabling it removes the tool and
+                every string that names it. Cannot be false together with ``researcher_subagent``.
+            researcher_subagent: Offer the ``researcher-agent`` sub-agent through ``task``, the
+                only single-call path for a prerequisite chain. Disabling it removes the spec and
+                every string that names it; ``task`` itself always remains, because
+                ``task(writer-agent)`` is a run exit. Cannot be false together with
+                ``research_batch_tool``.
             shallow_subagent: Offer the ``shallow-researcher`` sub-agent, which answers an easy
                 request end to end and whose report finishes the run without a further
                 orchestrator turn. Automatically suppressed for parent-report deltas.
@@ -158,6 +168,8 @@ class AutonomousResearcherAgent:
         self.max_research_concurrency = max_research_concurrency
         self.max_concurrent_source_tool_calls = max_concurrent_source_tool_calls
         self.max_source_tool_batch_size = max_source_tool_batch_size
+        self.research_batch_tool = research_batch_tool
+        self.researcher_subagent = researcher_subagent
         self.shallow_subagent = shallow_subagent
         self.shallow_subagent_max_llm_turns = shallow_subagent_max_llm_turns
         self.shallow_subagent_max_tool_iterations = shallow_subagent_max_tool_iterations
@@ -191,6 +203,10 @@ class AutonomousResearcherAgent:
                 source_registry_middleware=self.source_registry_middleware,
                 researcher_loop_guard=self.researcher_loop_guard,
                 artifact_manager=self.deepagents_runtime.artifact_manager,
+                # The orchestrator's ToolNameSanitizationMiddleware allowlist is built here, once,
+                # and the graph builder only ever consumes it - so a disabled run_research_batch
+                # has to be dropped from the allowlist at this call, not in the graph.
+                research_batch_tool=self.research_batch_tool,
             )
 
             self.source_tool_names = self.tool_set.source_tool_names
@@ -258,6 +274,8 @@ class AutonomousResearcherAgent:
             max_research_concurrency=self.max_research_concurrency,
             researcher_loop_guard=self.researcher_loop_guard,
             request_termination=self.request_termination,
+            research_batch_tool=self.research_batch_tool,
+            researcher_subagent=self.researcher_subagent,
             shallow_subagent=self.shallow_subagent,
             shallow_subagent_max_llm_turns=self.shallow_subagent_max_llm_turns,
             shallow_subagent_max_tool_iterations=self.shallow_subagent_max_tool_iterations,

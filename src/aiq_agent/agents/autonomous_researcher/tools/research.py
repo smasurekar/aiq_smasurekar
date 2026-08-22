@@ -91,8 +91,7 @@ self-contained fact — prefer it over searching yourself, because a worker's se
 before it reaches you instead of accumulating in your context.
 
 Each query runs as its own worker, so nothing one worker learns can inform another. If one question
-cannot be written until another is answered, that is a prerequisite chain: use
-`task(subagent_type="researcher-agent", ...)` for the whole chain instead of fanning out.
+cannot be written until another is answered, that is a prerequisite chain: {chain_route}
 
 Prefer a single well-formed batch. A follow-up batch is for consuming a prerequisite this one
 resolves — not for re-asking a question that came back thin.
@@ -144,8 +143,16 @@ def build_autonomous_research_batch_tool(
     backend: Any | None = None,
     state_budget: StateBudgetLedger | None = None,
     source_registry_middleware: Any | None = None,
+    researcher_subagent_enabled: bool = True,
 ) -> BaseTool:
-    """Build the orchestrator-only ``run_research_batch`` tool typed to ``AutonomousResearchQuery``."""
+    """Build the orchestrator-only ``run_research_batch`` tool typed to ``AutonomousResearchQuery``.
+
+    Args:
+        researcher_subagent_enabled: Whether ``task(subagent_type="researcher-agent")`` is offered
+            alongside this tool. The description hands prerequisite chains to that subagent when it
+            exists; when it does not, chains have to be resolved as successive batches instead, and
+            pointing at an absent subagent would cost the orchestrator a turn for nothing.
+    """
     limits = resource_limits or DeepResearchResourceLimits()
     state_budget = state_budget or StateBudgetLedger(limits=limits, files={}, sandbox_enabled=True)
     ledger_lock = asyncio.Lock()
@@ -246,6 +253,11 @@ def build_autonomous_research_batch_tool(
         )
 
     run_research_batch.description = _RESEARCH_BATCH_DESCRIPTION.format(
-        max_research_concurrency=max_research_concurrency
+        max_research_concurrency=max_research_concurrency,
+        chain_route=(
+            'use\n`task(subagent_type="researcher-agent", ...)` for the whole chain instead of fanning out.'
+            if researcher_subagent_enabled
+            else "batch the link you\ncan write now, then send a follow-up batch that consumes its answer."
+        ),
     )
     return run_research_batch

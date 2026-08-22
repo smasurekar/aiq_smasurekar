@@ -92,13 +92,13 @@ Generate lightweight final-answer requirements. Constraints are derived from:
 5. **Language**: If user input is non-English, add a constraint for response language.
 
 ## Queries
-After you have finished your own search tool calls and refined the plan, list the final queries in the ResearchPlan schema. The orchestrator will pass these ResearchQuery objects to `run_research_batch`; independent ResearchQuery objects can be batched together by the orchestrator. Base this list on what you discovered during your planning searches. Do not invent queries you did not ground in your tool use.
+After you have finished your own search tool calls and refined the plan, list the final queries in the ResearchPlan schema. The orchestrator will pass these ResearchQuery objects to the research workers; independent ResearchQuery objects can be researched concurrently. Base this list on what you discovered during your planning searches. Do not invent queries you did not ground in your tool use.
 The researcher worker has no additional context, so each query must be **self-contained and specific**.
 
 Query Guidelines:
 - Be specific and searchable - include key terms needed to find relevant sources
 - Each ResearchQuery should focus on one clear information need and map to specific answer components using `target_components`
-- Prefer more focused, independent ResearchQuery objects over large umbrella queries with many subqueries; `run_research_batch` is designed to run independent queries concurrently.
+- Prefer more focused, independent ResearchQuery objects over large umbrella queries with many subqueries; independent queries are researched concurrently.
 - `preferred_tools` MUST contain ordered exact names of available search/source tools listed below. The first item is the primary tool the researcher should use first. Do not use category labels like `external`, `internal`, `web`, `search`, or `paper`.
 - `fallback_tools` should contain ordered exact available source tool names for corroboration or gaps; leave it empty only when no fallback is useful.
 - Set a `depth` on each ResearchQuery to steer how much the researcher iterates on it (independent of how many queries you emit): `high` for a multi-hop query that needs chained reasoning (resolve one fact, then use it to find the next); `low` for a simple, self-contained lookup; `medium` otherwise. Prefer one `depth: "high"` query over many parallel queries when the need is depth, not breadth.
