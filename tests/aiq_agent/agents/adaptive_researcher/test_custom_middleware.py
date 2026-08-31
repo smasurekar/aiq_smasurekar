@@ -20,15 +20,18 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _DECLARE_EFFORT_TIER_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _DEFAULT_SINGLE_SHOT_SEARCH_BUDGET
+from aiq_agent.agents.adaptive_researcher.custom_middleware import _MAX_FORCED_RETURN_MODEL_CALLS
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _RESEARCHER_BUDGET_NUDGE
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _RUN_RESEARCH_BATCH_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _SINGLE_SHOT_BUDGET_NUDGE
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _THINK_TOOL
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ComplexityRouterMiddleware
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ConsecutiveThinkGuardMiddleware
+from aiq_agent.agents.adaptive_researcher.custom_middleware import ResearcherForcedReturnExhausted
 from aiq_agent.agents.adaptive_researcher.custom_middleware import ResearcherLoopGuardMiddleware
 from aiq_agent.agents.adaptive_researcher.custom_middleware import _canonical_source_signature
 from aiq_agent.agents.adaptive_researcher.models import ResearcherLoopGuardConfig
@@ -67,6 +70,38 @@ def _think_request():
     req = MagicMock()
     req.tool_call = {"name": _THINK_TOOL, "args": {"thought": "some thought"}}
     return req
+
+
+class _FakeModelRequest:
+    """Minimal stand-in for LangChain's ``ModelRequest`` with immutable ``override`` semantics.
+
+    Only the attributes the loop guard reads are modelled. ``override`` returns a *new* instance,
+    matching ``dataclasses.replace``, so a test can assert the original request was not mutated.
+    """
+
+    def __init__(self, *, tools=None, messages=None, response_format=object(), tool_choice=None):
+        self.tools = list(tools or [])
+        self.messages = list(messages or [])
+        self.response_format = response_format
+        self.tool_choice = tool_choice
+
+    def override(self, **overrides):
+        replacement = _FakeModelRequest(
+            tools=self.tools,
+            messages=self.messages,
+            response_format=self.response_format,
+            tool_choice=self.tool_choice,
+        )
+        for key, value in overrides.items():
+            setattr(replacement, key, value)
+        return replacement
+
+
+def _model_response(structured_response=None):
+    """Return a stand-in ``ModelResponse`` carrying only the field the guard inspects."""
+    response = MagicMock()
+    response.structured_response = structured_response
+    return response
 
 
 def _tool_message(content: str = "Thought recorded."):
@@ -556,6 +591,7 @@ class TestResearcherLoopGuardMiddleware:
             source_call_budgets=ResearcherSourceCallBudgets(low=1, medium=3, high=6),
             max_identical_source_calls=2,
             max_consecutive_thinks=2,
+            max_consecutive_blocked_source_calls=3,
         )
         self.mw = ResearcherLoopGuardMiddleware(
             source_tool_names={"knowledge_search", "web_search_tool"},
@@ -622,20 +658,76 @@ class TestResearcherLoopGuardMiddleware:
         assert self.mw._filter_tools([_make_tool("knowledge_search")]) == []
 
     @pytest.mark.asyncio
-    async def test_third_identical_source_call_is_blocked(self):
+    async def test_third_identical_source_call_is_rejected_without_exhausting_the_worker(self):
+        """R6: a repeat costs one rejected signature, not the whole worker."""
         handler = AsyncMock(return_value=_tool_message("source evidence"))
         request = _other_tool_request("knowledge_search")
         request.tool_call["args"] = {"query": "same query", "filters": {"b": 2, "a": 1}}
         await self.mw.awrap_tool_call(request, handler)
         await self.mw.awrap_tool_call(request, handler)
         result = await self.mw.awrap_tool_call(request, handler)
+
         assert handler.await_count == 2
         assert self.state.source_call_count == 2
-        assert self.state.exhaustion_reason == "repeated source-call signature"
         assert "repeated source-call limit" in result.content
+        # The rejection tells the model to vary the query, not to stop researching.
+        assert "materially different query" in result.content
+        assert self.state.exhausted is False
+        assert self.state.exhaustion_reason is None
+        assert self.state.blocked_source_calls == 1
+        assert self.state.consecutive_blocked_source_calls == 1
+        # Source tools stay visible: the worker still has budget for a different query.
+        names = {tool.name for tool in self.mw._filter_tools([_make_tool("knowledge_search")])}
+        assert names == {"knowledge_search"}
 
     @pytest.mark.asyncio
-    async def test_alternating_think_and_same_search_is_bounded(self):
+    async def test_repeated_signature_does_not_consume_remaining_budget(self):
+        """After a rejected repeat, a materially different query still executes."""
+        # `high` (budget 6) leaves headroom, so nothing here can trip the budget rule instead.
+        self.state.depth = "high"
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        repeated = _other_tool_request("knowledge_search")
+        repeated.tool_call["args"] = {"query": "same query"}
+        for _ in range(3):
+            await self.mw.awrap_tool_call(repeated, handler)
+
+        distinct = _other_tool_request("knowledge_search")
+        distinct.tool_call["args"] = {"query": "a different query"}
+        result = await self.mw.awrap_tool_call(distinct, handler)
+
+        assert handler.await_count == 3
+        assert result.content == "source evidence"
+        assert self.state.source_call_count == 3
+        assert self.state.exhausted is False
+
+    @pytest.mark.asyncio
+    async def test_executed_source_call_resets_the_blocked_run(self):
+        """Only real progress clears the run, so block/execute/block never reaches the ceiling."""
+        # `high` (budget 6) leaves headroom, so nothing here can trip the budget rule instead.
+        self.state.depth = "high"
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        repeated = _other_tool_request("knowledge_search")
+        repeated.tool_call["args"] = {"query": "same query"}
+        for _ in range(2):
+            await self.mw.awrap_tool_call(repeated, handler)
+        await self.mw.awrap_tool_call(repeated, handler)
+        await self.mw.awrap_tool_call(repeated, handler)
+        assert self.state.consecutive_blocked_source_calls == 2
+
+        distinct = _other_tool_request("knowledge_search")
+        distinct.tool_call["args"] = {"query": "a different query"}
+        await self.mw.awrap_tool_call(distinct, handler)
+        assert self.state.consecutive_blocked_source_calls == 0
+
+        await self.mw.awrap_tool_call(repeated, handler)
+        await self.mw.awrap_tool_call(repeated, handler)
+        assert self.state.consecutive_blocked_source_calls == 2
+        assert self.state.force_structured_return is False
+        assert self.state.exhausted is False
+
+    @pytest.mark.asyncio
+    async def test_alternating_think_and_same_search_trips_the_blocked_ceiling(self):
+        """Interleaved ``think`` must not launder the blocked run; the ceiling still fires."""
         think_guard = ConsecutiveThinkGuardMiddleware(max_consecutive_thinks=3)
         handler = AsyncMock(return_value=_tool_message("tool result"))
 
@@ -652,12 +744,48 @@ class TestResearcherLoopGuardMiddleware:
             await guarded_call(search)
             assert self.state.consecutive_think_count == 0
 
-        await guarded_call(_think_request())
-        result = await guarded_call(search)
+        result = None
+        for _ in range(self.config.max_consecutive_blocked_source_calls):
+            await guarded_call(_think_request())
+            result = await guarded_call(search)
 
         assert self.state.source_call_count == 2
-        assert self.state.exhaustion_reason == "repeated source-call signature"
+        assert self.state.consecutive_blocked_source_calls == 3
+        assert self.state.exhausted is True
+        assert self.state.exhaustion_reason == "consecutive blocked source calls"
+        assert self.state.force_structured_return is True
         assert "not executed" in result.content
+
+    @pytest.mark.asyncio
+    async def test_ceiling_reports_its_own_reason_not_the_budget(self, caplog):
+        """The regression itself: a non-budget trip must never be logged as ``reason=total_budget``."""
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        repeated = _other_tool_request("knowledge_search")
+        repeated.tool_call["args"] = {"query": "same query"}
+        with caplog.at_level("WARNING", logger="aiq_agent.agents.adaptive_researcher.custom_middleware"):
+            for _ in range(5):
+                await self.mw.awrap_tool_call(repeated, handler)
+
+        assert self.state.source_call_count < self.config.source_call_budgets.for_depth(self.state.depth)
+        assert "reason=total_budget" not in caplog.text
+        assert "reason=repeated_signature" in caplog.text
+        assert "forcing structured return" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_budget_exhaustion_still_reports_total_budget(self, caplog):
+        """The other direction: a genuine budget trip keeps its own reason."""
+        self.state.depth = "low"
+        handler = AsyncMock(return_value=_tool_message("source evidence"))
+        with caplog.at_level("WARNING", logger="aiq_agent.agents.adaptive_researcher.custom_middleware"):
+            first = _other_tool_request("knowledge_search")
+            first.tool_call["args"] = {"query": "first"}
+            await self.mw.awrap_tool_call(first, handler)
+            second = _other_tool_request("knowledge_search")
+            second.tool_call["args"] = {"query": "second"}
+            await self.mw.awrap_tool_call(second, handler)
+
+        assert self.state.exhaustion_reason == "total source-call budget"
+        assert "reason=total_budget" in caplog.text
 
     def test_signature_is_stable_across_mapping_key_order(self):
         first = _canonical_source_signature("knowledge_search", {"query": "x", "filters": {"a": 1, "b": 2}})
@@ -728,6 +856,99 @@ class TestResearcherLoopGuardMiddleware:
         assert self.state.think_blocked is True
         names = {tool.name for tool in self.mw._filter_tools([_make_tool(_THINK_TOOL), _make_tool("knowledge_search")])}
         assert names == {"knowledge_search"}
+
+    @pytest.mark.asyncio
+    async def test_forced_return_binds_only_the_structured_output_tool(self):
+        """The hard stop: an empty tool list leaves LangChain's ToolStrategy tool as the only option."""
+        self.state.force_structured_return = True
+        self.state.consecutive_blocked_source_calls = 3
+        original_tools = [_make_tool("knowledge_search"), _make_tool(_THINK_TOOL)]
+        original_messages = [HumanMessage(content="research this")]
+        request = _FakeModelRequest(tools=original_tools, messages=original_messages)
+        seen = {}
+
+        async def handler(sent):
+            seen["request"] = sent
+            return _model_response(structured_response={"findings": []})
+
+        await self.mw.awrap_model_call(request, handler)
+        sent = seen["request"]
+
+        assert sent.tools == []
+        # response_format must pass through by identity so LangChain reuses the ToolStrategy built
+        # at construction time; rebuilding it would rename the output tool the graph routes on.
+        assert sent.response_format is request.response_format
+        assert sent.tool_choice is request.tool_choice
+        assert len(sent.messages) == len(original_messages) + 1
+        assert isinstance(sent.messages[-1], HumanMessage)
+        assert "source tools are now closed" in sent.messages[-1].content
+        # The instruction rides on the request only; graph state must be untouched.
+        assert request.messages == original_messages
+        assert request.tools == original_tools
+        assert self.state.forced_return_model_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_forced_return_is_skipped_when_response_format_is_none(self):
+        """StructuredResponseTextFallbackMiddleware owns its own tools-disabled corrective call."""
+        # The ceiling sets both flags together, so reproduce that state exactly.
+        self.state.force_structured_return = True
+        self.state.exhausted = True
+        request = _FakeModelRequest(tools=[_make_tool("knowledge_search")], response_format=None)
+        seen = {}
+
+        async def handler(sent):
+            seen["request"] = sent
+            return _model_response()
+
+        await self.mw.awrap_model_call(request, handler)
+
+        # Falls back to plain withdrawal; no instruction appended, no forced-return recorded.
+        assert seen["request"].tools == []
+        assert seen["request"].messages == request.messages
+        assert self.state.forced_return_model_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_forced_return_raises_only_after_max_attempts(self):
+        """A model that ignores the forced return is stopped here, not by the recursion limit."""
+        self.state.force_structured_return = True
+
+        async def handler(_sent):
+            return _model_response()
+
+        for _ in range(_MAX_FORCED_RETURN_MODEL_CALLS - 1):
+            await self.mw.awrap_model_call(_FakeModelRequest(), handler)
+        assert self.state.forced_return_model_calls == _MAX_FORCED_RETURN_MODEL_CALLS - 1
+
+        with pytest.raises(ResearcherForcedReturnExhausted):
+            await self.mw.awrap_model_call(_FakeModelRequest(), handler)
+
+    @pytest.mark.asyncio
+    async def test_model_call_is_untouched_before_the_ceiling(self):
+        """Nothing is forced while the worker is healthy."""
+        request = _FakeModelRequest(tools=[_make_tool("knowledge_search")])
+        seen = {}
+
+        async def handler(sent):
+            seen["request"] = sent
+            return _model_response()
+
+        await self.mw.awrap_model_call(request, handler)
+
+        assert [tool.name for tool in seen["request"].tools] == ["knowledge_search"]
+        assert seen["request"].messages == request.messages
+
+    def test_filter_tools_counts_only_model_calls_it_reached(self, caplog):
+        """The withdrawal counter is the evidence that the model was told; it must not overcount."""
+        self.state.exhausted = True
+        with caplog.at_level("INFO", logger="aiq_agent.agents.adaptive_researcher.custom_middleware"):
+            self.mw._filter_tools([_make_tool("get_verified_sources")])
+            assert self.state.tools_withdrawn_model_calls == 0
+
+            self.mw._filter_tools([_make_tool("knowledge_search"), _make_tool("get_verified_sources")])
+            assert self.state.tools_withdrawn_model_calls == 1
+
+        assert "withdrew tools" in caplog.text
+        assert "hidden=knowledge_search" in caplog.text
 
     @pytest.mark.asyncio
     async def test_disabled_guard_passes_through_without_counting(self):

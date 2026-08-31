@@ -86,6 +86,7 @@ def test_researcher_loop_guard_defaults_match_prompt_budgets():
     assert guard.source_call_budgets.model_dump() == {"low": 1, "medium": 3, "high": 6}
     assert guard.max_identical_source_calls == 2
     assert guard.max_consecutive_thinks == 3
+    assert guard.max_consecutive_blocked_source_calls == 3
 
 
 def test_researcher_loop_guard_accepts_nested_overrides():
@@ -95,10 +96,12 @@ def test_researcher_loop_guard_accepts_nested_overrides():
             "source_call_budgets": {"low": 2, "medium": 4, "high": 8},
             "max_identical_source_calls": 1,
             "max_consecutive_thinks": 2,
+            "max_consecutive_blocked_source_calls": 2,
         },
     )
     assert config.researcher_loop_guard.source_call_budgets.high == 8
     assert config.researcher_loop_guard.max_identical_source_calls == 1
+    assert config.researcher_loop_guard.max_consecutive_blocked_source_calls == 2
 
 
 @pytest.mark.parametrize(
@@ -107,6 +110,7 @@ def test_researcher_loop_guard_accepts_nested_overrides():
         {"source_call_budgets": {"low": 0, "medium": 3, "high": 6}},
         {"source_call_budgets": {"low": 4, "medium": 3, "high": 6}},
         {"max_identical_source_calls": 0},
+        {"max_consecutive_blocked_source_calls": 0},
         {"unknown_option": True},
     ],
 )

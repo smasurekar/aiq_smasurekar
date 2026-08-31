@@ -140,15 +140,25 @@ async def _run_research_query(
                     f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
                 ) from exc
 
+            # The blocked / withdrawn / forced counters are reported once here rather than per
+            # event: the loop guard demotes its own per-block logging to DEBUG after the ceiling
+            # latches, so this line is what makes a whole eval job gradable with one grep.
+            # ``withdrawn_model_calls > 0`` alongside a non-zero ``blocked`` is the direct evidence
+            # that tool withdrawal reached the model and the model ignored it.
             logger.info(
                 "Researcher worker %s returned ResearchNotes | findings=%d gaps=%d sources=%d "
-                "source_calls=%d exhausted=%s",
+                "source_calls=%d blocked=%d exhausted=%s reason=%s withdrawn_model_calls=%d "
+                "forced_returns=%d",
                 guard_state.invocation_id,
                 len(note.findings),
                 len(note.gaps),
                 len(note.sources),
                 guard_state.source_call_count,
+                guard_state.blocked_source_calls,
                 guard_state.exhausted,
+                guard_state.exhaustion_reason or "-",
+                guard_state.tools_withdrawn_model_calls,
+                guard_state.forced_return_model_calls,
             )
             return note
         finally:

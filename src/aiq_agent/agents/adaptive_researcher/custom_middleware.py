@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import ToolMessage
 
@@ -1096,6 +1097,79 @@ _RESEARCHER_BUDGET_NUDGE = (
 )
 
 
+@dataclass(frozen=True)
+class _BlockReason:
+    """One source-call rejection reason, in the three vocabularies the guard has to speak.
+
+    ``code`` goes to the logs (short, stable, grep-able), ``phrase`` goes to the model inside the
+    blocked ``ToolMessage``, and ``exhaustion_reason`` is what gets latched onto the guard state -
+    deliberately ``None`` for reasons that must NOT end the worker.
+
+    Keeping the three together is what prevents a repeat of the defect this replaces: a
+    repeated-signature trip used to latch ``exhausted``, after which every later rejection took the
+    total-budget branch and was logged as ``reason=total_budget`` with a frozen call count - 116
+    consecutive times for one worker in eval job ``2026-08-27__10-57-20``.
+    """
+
+    code: str
+    phrase: str
+    exhaustion_reason: str | None
+
+
+_BLOCK_TOTAL_BUDGET = _BlockReason(
+    code="total_budget",
+    phrase="the total source-call budget",
+    exhaustion_reason="total source-call budget",
+)
+# ``exhaustion_reason`` is deliberately None: a duplicate request rejects ONE signature, it does
+# not end a worker that still has budget to spend on a materially different query.
+_BLOCK_REPEATED_SIGNATURE = _BlockReason(
+    code="repeated_signature",
+    phrase="the repeated source-call limit",
+    exhaustion_reason=None,
+)
+_BLOCK_CEILING = _BlockReason(
+    code="blocked_ceiling",
+    phrase="the consecutive blocked source-call ceiling",
+    exhaustion_reason="consecutive blocked source calls",
+)
+
+# Guidance appended to a blocked ``ToolMessage``. The repeated-signature case is the only rejection
+# that leaves the worker with budget, so it is the only one that asks for a different query rather
+# than for the notes; reusing the stop text there would recreate the bug in prompt form. Both are
+# content-free - counts only, never the rejected query text.
+_BLOCKED_STOP_GUIDANCE = (
+    "Stop searching and return structured ResearchNotes using gathered evidence; "
+    "record unsupported requirements as ResearchGap entries."
+)
+_BLOCKED_VARY_GUIDANCE = (
+    "This exact request already ran and its results are already in your context, so re-sending it "
+    "will never execute. You still have {remaining} source call(s) left: either issue a materially "
+    "different query, or return structured ResearchNotes now with ResearchGap entries for what you "
+    "could not support."
+)
+
+# Appended to the model *request* (never to graph state) on a forced structured return, so the
+# empty tool list the model is about to see does not read as an unexplained capability loss.
+_FORCED_RETURN_INSTRUCTION = (
+    "[SYSTEM - researcher loop guard: {blocked} consecutive source-tool calls were rejected, so "
+    "source tools are now closed for this query. Return structured ResearchNotes now from the "
+    "evidence already gathered and record every unsupported target component as a ResearchGap. "
+    "Do not attempt another search.]"
+)
+
+# Cap on forced structured-return model calls before the guard gives up and raises. Strictly
+# greater than ``StructuredOutputRetryGuardMiddleware``'s default ``max_attempts`` of 3 so that
+# guard owns schema-validation failures: a forced call whose ResearchNotes arguments fail
+# validation also yields ``structured_response=None``, and raising first here would hide the
+# actual pydantic error.
+_MAX_FORCED_RETURN_MODEL_CALLS = 5
+
+
+class ResearcherForcedReturnExhausted(RuntimeError):
+    """A researcher worker produced no structured response across every forced return attempt."""
+
+
 def _canonical_source_signature(tool_name: str, args: object) -> str:
     """Hash a source-tool name and canonical arguments without retaining argument content."""
     try:
@@ -1107,7 +1181,28 @@ def _canonical_source_signature(tool_name: str, args: object) -> str:
 
 
 class ResearcherLoopGuardMiddleware(AgentMiddleware):
-    """Hard-limit source calls and repeated requests within one researcher invocation."""
+    """Hard-limit source calls and repeated requests within one researcher invocation.
+
+    Three escalating rules, deliberately kept distinct because conflating the first two is what
+    produced the runaway loop this class was rewritten to fix:
+
+    1. **Repeated signature** - the same normalized source request beyond
+       ``max_identical_source_calls`` is rejected, and *only that signature* is rejected. The worker
+       keeps the rest of its depth budget and is told to vary the query. It used to be marked
+       globally exhausted here, which killed workers at 7 of 20 calls and returned thin notes.
+    2. **Spent depth budget** - once ``source_call_budgets.for_depth(depth)`` calls have executed,
+       the worker is exhausted and ``_filter_tools`` withdraws every source tool plus ``think``.
+    3. **Consecutive blocked-call ceiling** - after ``max_consecutive_blocked_source_calls``
+       rejections with no source call executing in between, the worker is exhausted *and* the next
+       model call is forced to produce the structured response.
+
+    Rule 3 exists because rule 2's withdrawal is advisory. ``request.tools`` controls only what the
+    model is bound to; LangChain routes a pending tool call to the tools node by *registered* name
+    (``_make_model_to_tools_edge``), so a model replaying a withdrawn name out of its own message
+    history still gets it executed, is blocked again, and repeats. In eval job
+    ``2026-08-27__10-57-20`` two workers did this 122 and 116 times, spending 9.6M input tokens -
+    11.7% of the whole job - to score a mean F1 of 0.286. Only rule 3 is enforcement.
+    """
 
     def __init__(
         self,
@@ -1131,16 +1226,59 @@ class ResearcherLoopGuardMiddleware(AgentMiddleware):
             return result
 
     @staticmethod
-    def _blocked_result(tool_call: dict, reason: str) -> ToolMessage:
+    def _blocked_result(tool_call: dict, reason: _BlockReason, guidance: str) -> ToolMessage:
+        """Return the tool result the model sees in place of a rejected source call."""
         return ToolMessage(
-            content=(
-                f"Source tool not executed: researcher loop guard reached {reason}. "
-                "Stop searching and return structured ResearchNotes using gathered evidence; "
-                "record unsupported requirements as ResearchGap entries."
-            ),
+            content=f"Source tool not executed: researcher loop guard reached {reason.phrase}. {guidance}",
             tool_call_id=tool_call.get("id", "researcher-loop-guard"),
             name=tool_call.get("name", "source-tool"),
             status="error",
+        )
+
+    def _record_block(self, state, *, tool_name: str, reason: _BlockReason, budget: int) -> None:
+        """Count one rejected source call, log it under its real reason, and latch the ceiling.
+
+        The log level drops to DEBUG once the ceiling has latched. Log volume is part of the defect
+        being fixed: the run this replaces emitted the same WARNING 116 times for a single worker,
+        which buried every other line in the job log without adding information. The per-worker
+        aggregate is reported once instead, by ``_run_research_query`` on completion.
+        """
+        state.blocked_source_calls += 1
+        state.consecutive_blocked_source_calls += 1
+        log = logger.debug if state.force_structured_return else logger.warning
+        log(
+            "Researcher loop guard blocked source call | invocation=%s depth=%s tool=%s reason=%s "
+            "calls=%d/%d blocked=%d consecutive_blocked=%d/%d",
+            state.invocation_id,
+            state.depth,
+            tool_name,
+            reason.code,
+            state.source_call_count,
+            budget,
+            state.blocked_source_calls,
+            state.consecutive_blocked_source_calls,
+            self._config.max_consecutive_blocked_source_calls,
+        )
+        if (
+            state.force_structured_return
+            or state.consecutive_blocked_source_calls < self._config.max_consecutive_blocked_source_calls
+        ):
+            return
+        # The ceiling is the only rule that may end a worker which still has source-call budget. It
+        # does so deterministically - by binding the structured-output tool alone on the next model
+        # call - rather than by hiding tools the model can replay from its own history anyway.
+        state.force_structured_return = True
+        self._mark_exhausted(state, _BLOCK_CEILING.exhaustion_reason)
+        logger.warning(
+            "Researcher loop guard forcing structured return | invocation=%s depth=%s "
+            "consecutive_blocked=%d/%d calls=%d/%d withdrawn_model_calls=%d",
+            state.invocation_id,
+            state.depth,
+            state.consecutive_blocked_source_calls,
+            self._config.max_consecutive_blocked_source_calls,
+            state.source_call_count,
+            budget,
+            state.tools_withdrawn_model_calls,
         )
 
     def _filter_tools(self, tools: list[object]) -> list[object]:
@@ -1155,15 +1293,114 @@ class ResearcherLoopGuardMiddleware(AgentMiddleware):
             hidden.add(_THINK_TOOL)
         if not hidden:
             return tools
+        withdrawn = sorted(hidden.intersection(name for tool in tools if (name := _request_tool_name(tool))))
+        if not withdrawn:
+            # Nothing to hide on this request, so return the caller's list untouched and leave the
+            # counter alone: it must only ever record model calls the withdrawal actually reached.
+            return tools
+        state.tools_withdrawn_model_calls += 1
+        # Withdrawal is advisory, not enforcement: LangChain routes a tool call to the tools node by
+        # registered name (``_make_model_to_tools_edge``), so a model replaying a hidden name out of
+        # its own history still gets it executed. The first withdrawal per worker is logged at INFO
+        # so an eval run shows unambiguously that the model *was* told; later ones are DEBUG.
+        log = logger.info if state.tools_withdrawn_model_calls == 1 else logger.debug
+        log(
+            "Researcher loop guard withdrew tools | invocation=%s depth=%s hidden=%s model_calls=%d reason=%s",
+            state.invocation_id,
+            state.depth,
+            ",".join(withdrawn),
+            state.tools_withdrawn_model_calls,
+            state.exhaustion_reason or "consecutive_thinks",
+        )
         return [tool for tool in tools if _request_tool_name(tool) not in hidden]
 
+    def _forced_return_state(self, request):
+        """Return the guard state when this model call must be forced to produce a structured result.
+
+        ``None`` means "handle this call normally". The ``response_format is None`` case matters:
+        ``StructuredResponseTextFallbackMiddleware`` sits OUTER of this guard on the
+        ``run_research_batch`` worker runnable and issues its own corrective call with ``tools=[]``
+        and ``response_format=None``. Forcing on that request would leave the model with neither
+        tools nor a schema, so that middleware owns the turn instead.
+        """
+        state = CURRENT_RESEARCHER_GUARD_STATE.get()
+        if not self._config.enabled or state is None or not state.force_structured_return:
+            return None
+        if getattr(request, "response_format", None) is None:
+            return None
+        return state
+
+    @staticmethod
+    def _forced_return_request(request, state):
+        """Rebuild the request so the structured-output tool is the only thing the model can emit.
+
+        ``tools=[]`` is a hard constraint here, unlike in ``_filter_tools``. LangChain appends the
+        structured-output tools to ``request.tools`` *after* middleware runs and, whenever any
+        exist, binds with ``tool_choice="any"`` (``_get_bound_model``, langchain/agents/factory.py).
+        An empty list plus the untouched ``response_format`` therefore binds exactly one callable
+        tool - the ``ResearchNotes`` output tool - and forces the provider to call it. That does not
+        depend on the model honouring anything.
+
+        ``response_format`` is passed through by identity so LangChain reuses the ``ToolStrategy``
+        built at agent-construction time and the output tool keeps the name the graph routes on;
+        rebuilding it raises "ToolStrategy specifies tool ... which wasn't declared". ``tool_choice``
+        is likewise left alone - it is overwritten with "any" downstream.
+
+        The instruction goes on the *request* only: ``override`` is an immutable copy and the model
+        node writes back only the model's own output, so graph state is untouched and the transcript
+        does not grow one instruction per forced turn.
+        """
+        instruction = _FORCED_RETURN_INSTRUCTION.format(blocked=state.consecutive_blocked_source_calls)
+        return request.override(messages=[*request.messages, HumanMessage(content=instruction)], tools=[])
+
+    @staticmethod
+    def _record_forced_return(state, response):
+        """Track forced structured returns and stop a model that keeps ignoring them."""
+        state.forced_return_model_calls += 1
+        if getattr(response, "structured_response", None) is not None:
+            logger.info(
+                "Researcher loop guard forced structured return | invocation=%s depth=%s "
+                "attempts=%d calls=%d blocked=%d",
+                state.invocation_id,
+                state.depth,
+                state.forced_return_model_calls,
+                state.source_call_count,
+                state.blocked_source_calls,
+            )
+            return response
+        if state.forced_return_model_calls >= _MAX_FORCED_RETURN_MODEL_CALLS:
+            # Raising is the only stop left. The alternative is the graph recursion ceiling (250 in
+            # every shipped config, inherited by the worker through ``researcher_invoke_config``),
+            # which reaches the same failure hundreds of turns and millions of tokens later. Same
+            # contract as ``StructuredOutputRetryGuardMiddleware``: ``run_research_batch`` captures
+            # this as one per-item failure rather than losing the whole batch.
+            raise ResearcherForcedReturnExhausted(
+                f"researcher worker {state.invocation_id} produced no structured response in "
+                f"{state.forced_return_model_calls} forced model calls "
+                f"(source_calls={state.source_call_count}, blocked={state.blocked_source_calls})"
+            )
+        logger.warning(
+            "Researcher loop guard forced call produced no structured response | invocation=%s depth=%s attempts=%d/%d",
+            state.invocation_id,
+            state.depth,
+            state.forced_return_model_calls,
+            _MAX_FORCED_RETURN_MODEL_CALLS,
+        )
+        return response
+
     def wrap_model_call(self, request, handler):
-        """Withdraw exhausted source/think tools before a synchronous model call."""
-        return handler(request.override(tools=self._filter_tools(request.tools)))
+        """Withdraw exhausted tools, or force the structured return once the ceiling has latched."""
+        state = self._forced_return_state(request)
+        if state is None:
+            return handler(request.override(tools=self._filter_tools(request.tools)))
+        return self._record_forced_return(state, handler(self._forced_return_request(request, state)))
 
     async def awrap_model_call(self, request, handler):
-        """Withdraw exhausted source/think tools before an asynchronous model call."""
-        return await handler(request.override(tools=self._filter_tools(request.tools)))
+        """Withdraw exhausted tools, or force the structured return once the ceiling has latched."""
+        state = self._forced_return_state(request)
+        if state is None:
+            return await handler(request.override(tools=self._filter_tools(request.tools)))
+        return self._record_forced_return(state, await handler(self._forced_return_request(request, state)))
 
     async def awrap_tool_call(self, request, handler):
         """Count logical source calls, block repeats, and preserve the last allowed result."""
@@ -1179,41 +1416,43 @@ class ResearcherLoopGuardMiddleware(AgentMiddleware):
 
         tool_name = tool_call["name"]
         budget = self._config.source_call_budgets.for_depth(state.depth)
-        if state.exhausted or state.source_call_count >= budget:
-            self._mark_exhausted(state, "total source-call budget")
-            logger.warning(
-                "Researcher loop guard blocked source call | "
-                "invocation=%s depth=%s tool=%s calls=%d/%d reason=total_budget",
-                state.invocation_id,
-                state.depth,
-                tool_name,
-                state.source_call_count,
-                budget,
-            )
-            return self._blocked_result(tool_call, "the total source-call budget")
 
+        # 1. Hard stop. ``exhausted`` is now set only by rules that genuinely end the worker - the
+        #    spent source-call budget, or the blocked-call ceiling - so the reason reported here is
+        #    always the real one. Previously a repeated-signature trip latched ``exhausted`` and
+        #    every later rejection was reported as a budget trip with a frozen call count.
+        if state.exhausted or state.source_call_count >= budget:
+            if not state.exhausted:
+                self._mark_exhausted(state, _BLOCK_TOTAL_BUDGET.exhaustion_reason)
+            reason = _BLOCK_CEILING if state.force_structured_return else _BLOCK_TOTAL_BUDGET
+            self._record_block(state, tool_name=tool_name, reason=reason, budget=budget)
+            return self._blocked_result(tool_call, reason, _BLOCKED_STOP_GUIDANCE)
+
+        # 2. Repeated signature. Reject THIS request only. The worker keeps the rest of its budget
+        #    and is told to vary the query rather than to stop: ending it here killed workers at 7
+        #    of 20 calls, which cost accuracy (thin notes -> another batch) as well as tokens.
         signature = _canonical_source_signature(tool_name, tool_call.get("args", {}))
         identical_count = state.source_signature_counts.get(signature, 0)
         if identical_count >= self._config.max_identical_source_calls:
-            self._mark_exhausted(state, "repeated source-call signature")
-            logger.warning(
-                "Researcher loop guard blocked repeated source call | "
-                "invocation=%s depth=%s tool=%s repeats=%d/%d reason=repeated_signature",
-                state.invocation_id,
-                state.depth,
-                tool_name,
-                identical_count,
-                self._config.max_identical_source_calls,
+            self._record_block(state, tool_name=tool_name, reason=_BLOCK_REPEATED_SIGNATURE, budget=budget)
+            # ``_record_block`` may have just latched the ceiling; if so the worker really is over,
+            # so send the stop guidance rather than inviting a query it can no longer run.
+            guidance = (
+                _BLOCKED_STOP_GUIDANCE
+                if state.force_structured_return
+                else _BLOCKED_VARY_GUIDANCE.format(remaining=max(budget - state.source_call_count, 0))
             )
-            return self._blocked_result(tool_call, "the repeated source-call limit")
+            return self._blocked_result(tool_call, _BLOCK_REPEATED_SIGNATURE, guidance)
 
-        # Count before awaiting so parallel tool calls in this researcher share one hard ceiling.
+        # 3. Allowed. Count before awaiting so parallel tool calls in this researcher share one hard
+        #    ceiling, and clear the blocked run - real progress is the only thing that resets it.
         state.source_call_count += 1
         state.source_signature_counts[signature] = identical_count + 1
+        state.consecutive_blocked_source_calls = 0
         result = await handler(request)
 
         if state.source_call_count >= budget:
-            self._mark_exhausted(state, "total source-call budget")
+            self._mark_exhausted(state, _BLOCK_TOTAL_BUDGET.exhaustion_reason)
             logger.info(
                 "Researcher source-call budget reached | invocation=%s depth=%s tool=%s calls=%d/%d",
                 state.invocation_id,

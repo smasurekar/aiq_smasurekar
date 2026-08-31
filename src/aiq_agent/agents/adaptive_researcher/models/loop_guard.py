@@ -42,3 +42,9 @@ class ResearcherLoopGuardConfig(BaseModel):
     source_call_budgets: ResearcherSourceCallBudgets = Field(default_factory=ResearcherSourceCallBudgets)
     max_identical_source_calls: int = Field(default=2, ge=1)
     max_consecutive_thinks: int = Field(default=3, ge=1)
+    # The hard backstop behind tool withdrawal, which only changes what the model is *told* about:
+    # a model that re-emits a withdrawn-but-registered tool name from its own history still gets it
+    # executed, so a rejected source call can repeat indefinitely (one eval worker did it 116 times
+    # for 6.1M input tokens). After this many consecutive rejections the guard stops asking and
+    # forces the structured return. Three is ample: two informative rejections, then out.
+    max_consecutive_blocked_source_calls: int = Field(default=3, ge=1)

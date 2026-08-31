@@ -324,9 +324,25 @@ eligible for another call.
 The adaptive researcher adds a hard per-worker loop guard to the shared batch
 execution path. The existing consecutive-think guard only detects uninterrupted
 `think` calls; a sequence that alternates `think` and a source tool resets that
-counter. The adaptive guard separately limits all source calls and repeated
-normalized source requests, then withdraws source tools and `think` so the
-worker must return `ResearchNotes` with explicit gaps.
+counter. The adaptive guard applies three distinct rules:
+
+1. **Repeated request.** The same normalized source request beyond
+   `max_identical_source_calls` is rejected, and only that request is rejected.
+   The worker keeps the rest of its depth budget and is told to vary the query.
+2. **Spent depth budget.** Once `source_call_budgets` calls have executed, the
+   worker is exhausted and source tools plus `think` are withdrawn from later
+   model calls.
+3. **Consecutive blocked-call ceiling.** After
+   `max_consecutive_blocked_source_calls` rejections with no source call
+   executing in between, the worker is exhausted *and* the next model call is
+   rebuilt with an empty tool list, leaving the structured-output tool as the
+   only thing the model can emit.
+
+Rule 3 exists because rule 2's withdrawal is advisory rather than enforcement.
+`request.tools` controls only what the model is bound to; LangChain routes a
+pending tool call to the tool node by registered name, so a model that replays a
+withdrawn tool name out of its own message history still has it executed, is
+blocked again, and can repeat indefinitely. Only rule 3 is a hard stop.
 
 Each concurrent `ResearchQuery` receives context-local guard state. Counts do
 not leak between workers or simultaneous requests even though the researcher
@@ -343,15 +359,18 @@ researcher_loop_guard:
     high: 6
   max_identical_source_calls: 2
   max_consecutive_thinks: 3
+  max_consecutive_blocked_source_calls: 3
 ```
 
 `source_call_budgets` applies to each researcher invocation, based on the
 query's `depth`; a missing depth uses `medium`. Calls are counted before tool
 execution so parallel calls cannot exceed the ceiling. Repeated calls use a
 hash of the tool name and canonicalized arguments, and logs contain only that
-metadata rather than raw query content. Set `enabled: false` to restore the
-previous prompt-guided source behavior while retaining the existing
-consecutive-think middleware.
+metadata rather than raw query content. `max_consecutive_blocked_source_calls`
+counts only rejected source calls and is reset only by a source call that
+actually executes, so interleaving `think` cannot launder the count. Set
+`enabled: false` to restore the previous prompt-guided source behavior while
+retaining the existing consecutive-think middleware.
 
 ### Phase 4: Writer-First Final Synthesis
 
