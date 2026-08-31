@@ -15,13 +15,20 @@
 **/certs/
 
 # ---- Python ----
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-*.egg
-.eggs/
+# These need `**/` to apply below the context root: Docker matches a pattern against the
+# whole context-relative path and `*` never crosses `/`, so a bare `__pycache__/` matches
+# only a top-level directory. Without the recursive form, stale build artifacts from every
+# package under src/, sources/ and frontends/ enter the build context. That is not just
+# bloat: a leftover `*.egg-info/` is enough to make a deleted package's directory reappear
+# in the image, and `sources/*` is a uv workspace glob, so uv then fails the build with
+# "Workspace member ... is missing a pyproject.toml".
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/*.egg-info/
+**/*.egg
+**/.eggs/
 build/
 dist/
 sdist/
@@ -30,8 +37,9 @@ wheels/
 MANIFEST
 
 # ---- Virtual Environments ----
-.venv/
-venv/
+# Recursive: a venv inside any workspace package would otherwise be copied wholesale.
+**/.venv/
+**/venv/
 ENV/
 env/
 
@@ -49,11 +57,11 @@ env/
 .DS_Store
 
 # ---- Testing ----
-.pytest_cache/
+**/.pytest_cache/
 .coverage
 htmlcov/
 .tox/
-.ruff_cache/
+**/.ruff_cache/
 tests/
 
 # ---- Documentation (not needed at runtime) ----
