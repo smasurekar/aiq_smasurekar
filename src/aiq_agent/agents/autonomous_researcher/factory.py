@@ -959,6 +959,7 @@ def build_autonomous_research_graph(
         researcher_source_call_budgets=researcher_loop_guard.source_call_budgets.model_dump(),
         researcher_max_identical_source_calls=researcher_loop_guard.max_identical_source_calls,
         researcher_loop_guard_enabled=researcher_loop_guard.enabled,
+        researcher_max_consecutive_blocked_source_calls=researcher_loop_guard.max_consecutive_blocked_source_calls,
     )
     # `researcher_runnable` exists ONLY to be the worker behind run_research_batch: the
     # task-reachable researcher-agent spec builds its own agent from `context`. So when the batch
