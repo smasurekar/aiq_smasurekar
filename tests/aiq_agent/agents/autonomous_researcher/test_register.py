@@ -185,10 +185,19 @@ class TestSubmitFinalReport:
 class TestResearchDoorFlags:
     """`research_batch_tool` / `researcher_subagent` gate the two delegated-research doors."""
 
-    def test_both_doors_default_on(self):
+    def test_the_batch_is_the_default_door_and_the_direct_one_is_opt_in(self):
+        """Batch-only is the shipped default: the researcher runs behind run_research_batch, and
+        `task(researcher-agent)` is a second door onto that same worker that must be asked for.
+        """
         fields = AutonomousResearchAgentConfig.model_fields
         assert fields["research_batch_tool"].default is True
-        assert fields["researcher_subagent"].default is True
+        assert fields["researcher_subagent"].default is False
+
+    def test_the_default_config_holds_a_research_path(self):
+        """The default must not be the rejected both-off combination."""
+        config = AutonomousResearchAgentConfig(orchestrator_llm="llm")
+        assert config.research_batch_tool is True
+        assert config.researcher_subagent is False
 
     @pytest.mark.parametrize(
         ("batch", "subagent"),
@@ -228,17 +237,23 @@ class TestResearchDoorFlags:
             assert forwarded in source, forwarded
 
 
-class TestShippedConfigsDeclareBothDoors:
-    """Both shipped configs must be a control arm, not an A/B arm."""
+class TestShippedConfigsAreBatchOnly:
+    """Every shipped config must reach the researcher through run_research_batch.
+
+    The direct `task(researcher-agent)` door is an opt-in second route onto the same worker, kept
+    for the eval arms. A shipped config that opened it would silently change which arm a default
+    deployment runs, and the two are not equal-budget (see the eval-fairness note in
+    configs/config_autonomous_frag.yml).
+    """
 
     FRESHQA_PATH = REPO_ROOT / "frontends/benchmarks/freshqa/configs/config_autonomous_frag_freshqa.yml"
 
     @pytest.mark.parametrize("path", [CONFIG_PATH, FRESHQA_PATH])
-    def test_both_doors_are_enabled_and_the_config_validates(self, path):
+    def test_the_batch_door_is_open_the_direct_door_is_not(self, path):
         if not path.exists():
             pytest.skip(f"{path.name} is not present in this checkout")
         agent = dict(yaml.safe_load(path.read_text(encoding="utf-8"))["functions"]["autonomous_research_agent"])
         agent.pop("_type")
         config = AutonomousResearchAgentConfig(**agent)
         assert config.research_batch_tool is True
-        assert config.researcher_subagent is True
+        assert config.researcher_subagent is False

@@ -279,13 +279,26 @@ class TestOrchestratorTools:
 class TestSubagents:
     """`task` must advertise exactly four usable delegation routes."""
 
-    def test_exactly_shallow_researcher_planner_writer_plus_inert_stub(self, mock_llm_provider):
+    def test_the_default_roster_reaches_the_researcher_only_through_the_batch(self, mock_llm_provider):
         """Order is part of the contract: shallow-researcher renders first in the `task` listing.
 
         Its description says "FIRST, or not at all"; putting it first in the rendered menu is free
         reinforcement of that, since deepagents renders the specs in list order.
+
+        `researcher-agent` is absent by default. It still executes every research question, as the
+        `run_research_batch` worker — what the default withholds is a second, direct `task` door
+        onto that same worker.
         """
         names = [s["name"] for s in _build_and_capture(mock_llm_provider)["subagents"]]
+        assert names == [
+            "shallow-researcher",
+            "planner-agent",
+            "writer-agent",
+            GENERAL_PURPOSE_SUBAGENT_NAME,
+        ]
+
+    def test_the_direct_researcher_door_inserts_ahead_of_the_planner_when_asked_for(self, mock_llm_provider):
+        names = [s["name"] for s in _build_and_capture(mock_llm_provider, researcher_subagent=True)["subagents"]]
         assert names == [
             "shallow-researcher",
             "researcher-agent",
@@ -307,15 +320,22 @@ class TestSubagents:
         assert "submit_final_report" not in str(gp["tools"])
         assert "run_research_batch" not in str(gp["tools"])
 
-    def test_general_purpose_description_points_back_at_researcher(self, mock_llm_provider):
-        """Its description must not compete with researcher-agent for research delegation."""
-        specs = _build_and_capture(mock_llm_provider)["subagents"]
-        gp = next(s for s in specs if s["name"] == GENERAL_PURPOSE_SUBAGENT_NAME)
-        assert "researcher-agent" in gp["description"]
-        assert "researching complex questions" not in gp["description"], "deepagents' default description leaked"
+    def test_general_purpose_description_redirects_to_the_door_this_build_holds(self, mock_llm_provider):
+        """Its description must not compete for research delegation, and must not name an absent
+        door: a redirect to a route that was never built costs the orchestrator a turn."""
+        for kwargs, expected, absent in (
+            ({}, "run_research_batch", "researcher-agent"),
+            ({"researcher_subagent": True}, "researcher-agent", None),
+        ):
+            specs = _build_and_capture(mock_llm_provider, **kwargs)["subagents"]
+            gp = next(s for s in specs if s["name"] == GENERAL_PURPOSE_SUBAGENT_NAME)
+            assert expected in gp["description"]
+            if absent:
+                assert absent not in gp["description"]
+            assert "researching complex questions" not in gp["description"], "deepagents' default description leaked"
 
     def test_researcher_subagent_returns_structured_notes(self, mock_llm_provider):
-        specs = _build_and_capture(mock_llm_provider)["subagents"]
+        specs = _build_and_capture(mock_llm_provider, researcher_subagent=True)["subagents"]
         researcher = next(s for s in specs if s["name"] == "researcher-agent")
         assert researcher["response_format"].__name__ == "ResearchNotes"
         assert [t.name for t in researcher["tools"]], "researcher must hold source tools"
@@ -372,7 +392,6 @@ class TestDelegationGuidanceLivesInDescriptions:
             "Do not ask the same thing in new words",
             "keywords, not URLs",
             "resend only the queries that failed, never one that worked",
-            "give the whole chain to `researcher-agent` once",
             "answer with what you have",  # honest partial beats nothing
             "Stop once the evidence is enough",
             "answer that part and say what is missing",
@@ -382,6 +401,10 @@ class TestDelegationGuidanceLivesInDescriptions:
             "call `get_verified_sources` before writing anything with citations",
         ):
             assert rule in prompt, rule
+        # The failure ladder's last rung names a door, so it is the one arm-dependent rule here.
+        assert "do not send a third: record it as an explicit gap" in prompt
+        opt_in = _build_and_capture(mock_llm_provider, researcher_subagent=True)["system_prompt"]
+        assert "give the whole chain to `researcher-agent` once" in opt_in
 
     def test_research_loop_stays_concise(self, mock_llm_provider):
         """It is the orchestrator's hot path, re-read on every turn, so terse beats exhaustive.
@@ -446,7 +469,8 @@ class TestDelegationGuidanceLivesInDescriptions:
         ],
     )
     def test_each_description_carries_the_full_contract(self, mock_llm_provider, name, required):
-        specs = _build_and_capture(mock_llm_provider)["subagents"]
+        # researcher-agent is an opt-in door, so open every door to inspect all four contracts.
+        specs = _build_and_capture(mock_llm_provider, researcher_subagent=True)["subagents"]
         description = next(s for s in specs if s["name"] == name)["description"]
         for fragment in required:
             assert fragment in description, f"{name} lost: {fragment}"
@@ -536,8 +560,12 @@ class TestOrchestratorPrompt:
         """
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
         assert "Deciding what to do" in prompt
-        for route in ("submit_final_report", "run_research_batch", "researcher-agent", "planner-agent"):
+        for route in ("submit_final_report", "run_research_batch", "planner-agent"):
             assert route in prompt, route
+        # researcher-agent is off by default, and an absent door must not be named anywhere.
+        assert "researcher-agent" not in prompt
+        opt_in = _build_and_capture(mock_llm_provider, researcher_subagent=True)["system_prompt"]
+        assert "researcher-agent" in opt_in
 
     def test_decision_section_is_not_a_tier_ladder(self, mock_llm_provider):
         """The whole point of this agent is that requests are not classified into effort levels.
@@ -891,17 +919,26 @@ class TestResearchDoorFlags:
         assert len(section) <= 1600, f"{arm}: research loop grew to {len(section)} chars"
 
     @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
-    def test_the_decision_section_states_exactly_one_route_per_dependency_shape(
-        self, mock_llm_provider, arm, batch, subagent
-    ):
-        """Each arm must still answer "what do I do with a chain?" — with a door it holds."""
-        prompt = _build_and_capture(
+    def test_the_decision_section_states_the_dependency_rule_generically(self, mock_llm_provider, arm, batch, subagent):
+        """The prompt states the dependency SHAPE; the descriptions name the route for it.
+
+        The section used to branch three ways on the door flags and name a subagent per shape,
+        which made the orchestrator prompt carry per-subagent routing text — the thing this agent
+        keeps in the descriptions. The rule that survives here is arm-independent, so it must be
+        stated exactly once and must not name a door.
+        """
+        captured = _build_and_capture(
             mock_llm_provider,
             research_batch_tool=batch,
             researcher_subagent=subagent,
-        )["system_prompt"]
-        assert "is a chain" in prompt
-        assert prompt.count("**Do the unknowns depend on each other?**") == 1
+        )
+        prompt = captured["system_prompt"]
+        rule = "**Send independent unknowns out together, dependent ones in order.**"
+        assert prompt.count(rule) == 1
+        assert "Never aim two research calls at the same unresolved fact" in prompt
+        # The chain still has a home; it is just named by a description now, not by the prompt.
+        if subagent:
+            assert "PREREQUISITE CHAIN" in _model_visible_text(captured)
 
     @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
     def test_researcher_task_persistence_stays_wired_in_every_arm(self, mock_llm_provider, arm, batch, subagent):
@@ -936,18 +973,30 @@ class TestResearchDoorFlags:
             _build_and_capture(mock_llm_provider, research_batch_tool=False, researcher_subagent=False)
 
     def test_the_default_arm_is_unchanged(self, mock_llm_provider):
-        """The control arm's routing text must survive the flags byte for byte.
+        """The shipped arm's routing text must survive the flags byte for byte.
 
         Everything the A/B measures is a delta against this arm, so a stray rewording here would
-        silently move the baseline.
+        silently move the baseline. The shipped arm is batch-only: `run_research_batch` is the
+        research path and `task` advertises no direct researcher door.
         """
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
         for sentence in (
             "- **`run_research_batch`** is your primary research path;",
-            "your only route to `shallow-researcher`, `planner-agent`, `researcher-agent`, and `writer-agent`",
+            "your only route to `shallow-researcher`, `planner-agent`, and `writer-agent`",
             "name `fetch_url_tool` in that query's `preferred_tools`",
             "steer them by naming them (exact names) in a `ResearchQuery.preferred_tools`",
+            "If a target fails twice, do not send a third: record it as an explicit gap",
+            "**Send independent unknowns out together, dependent ones in order.**",
+        ):
+            assert sentence in prompt, sentence
+
+    def test_the_both_doors_arm_is_unchanged(self, mock_llm_provider):
+        """The opt-in arm is the A/B comparison, so pin its routing text the same way."""
+        prompt = _build_and_capture(mock_llm_provider, researcher_subagent=True)["system_prompt"]
+        for sentence in (
+            "- **`run_research_batch`** is your primary research path;",
+            "your only route to `shallow-researcher`, `planner-agent`, `researcher-agent`, and `writer-agent`",
             "If a target fails twice, give the whole chain to `researcher-agent` once",
-            "One you cannot phrase until another is resolved is a chain — give the whole chain to `researcher-agent`.",
+            "**Send independent unknowns out together, dependent ones in order.**",
         ):
             assert sentence in prompt, sentence

@@ -143,15 +143,17 @@ def build_autonomous_research_batch_tool(
     backend: Any | None = None,
     state_budget: StateBudgetLedger | None = None,
     source_registry_middleware: Any | None = None,
-    researcher_subagent_enabled: bool = True,
+    researcher_subagent_enabled: bool = False,
 ) -> BaseTool:
     """Build the orchestrator-only ``run_research_batch`` tool typed to ``AutonomousResearchQuery``.
 
     Args:
         researcher_subagent_enabled: Whether ``task(subagent_type="researcher-agent")`` is offered
-            alongside this tool. The description hands prerequisite chains to that subagent when it
-            exists; when it does not, chains have to be resolved as successive batches instead, and
-            pointing at an absent subagent would cost the orchestrator a turn for nothing.
+            alongside this tool. Defaults False, matching the shipped config: the researcher is
+            normally reached only through this tool. The description hands prerequisite chains to
+            that subagent when it exists; when it does not, chains have to be resolved as
+            successive batches instead, and pointing at an absent subagent would cost the
+            orchestrator a turn for nothing.
     """
     limits = resource_limits or DeepResearchResourceLimits()
     state_budget = state_budget or StateBudgetLedger(limits=limits, files={}, sandbox_enabled=True)

@@ -105,8 +105,8 @@ functions:
   fetch_url_tool:
     _type: web_page_fetch
     max_urls_per_call: 4
-    max_chars_per_page: 10000
-    max_chars_per_call: 24000
+    max_chars_per_page: 50000
+    max_chars_per_call: 48000
     extract_depth: advanced
 
   knowledge_search:
@@ -125,11 +125,18 @@ functions:
     researcher_llm: nemotron_super_llm
     planner_llm: nemotron_super_llm
     writer_llm: nemotron_super_llm
-    # Delegated research paths. Both on is the shipped behavior, and both cannot be false.
+    # Delegated research paths. Two doors onto ONE worker: the researcher runnable executes every
+    # research question either way, and these flags only choose how the orchestrator reaches it.
     # `research_batch_tool` offers run_research_batch, which fans N independent questions out to N
     # isolated workers in one call; `researcher_subagent` offers task(researcher-agent), which
-    # sends ONE topic to one worker that may hop between searches. Turning exactly one off is an
-    # A/B arm: the orchestrator prompt, every subagent description, the run_research_batch
+    # sends ONE topic to one worker that may hop between searches.
+    #
+    # This deployment is batch-only, which is also the code default: the researcher is reachable
+    # only as the run_research_batch worker. The direct door's one distinctive shape, the
+    # prerequisite chain, is covered on turn one by shallow-researcher and afterwards by the
+    # link-at-a-time batching the run_research_batch description renders when this flag is off.
+    # Setting researcher_subagent: true opens the second door and builds the both-doors eval arm;
+    # both cannot be false. The orchestrator prompt, every subagent description, the run_research_batch
     # description, the shallow failure notice, and the loop guard's blocked-tool messages are all
     # gated on these, so the model is never told to call a door this deployment does not hold.
     #
@@ -159,7 +166,7 @@ functions:
     # Scoped to the sub-run: the orchestrator and researcher-agent keep both tools.
     shallow_subagent_tools:
       - web_search_tool
-      - fetch_url_tool
+      # - fetch_url_tool
     researcher_loop_guard:
       enabled: true
       source_call_budgets:
@@ -220,6 +227,7 @@ functions:
       # - web_search_tool
       # - advanced_web_search_tool
       - knowledge_search
+      - fetch_url_tool
 
 workflow:
   _type: autonomous_research_workflow
