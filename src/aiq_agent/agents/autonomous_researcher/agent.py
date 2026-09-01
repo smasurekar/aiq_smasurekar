@@ -110,7 +110,7 @@ class AutonomousResearcherAgent:
         max_concurrent_source_tool_calls: int = DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS,
         max_source_tool_batch_size: int = DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE,
         research_batch_tool: bool = True,
-        researcher_subagent: bool = True,
+        researcher_subagent: bool = False,
         shallow_subagent: bool = True,
         shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
         shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
@@ -145,10 +145,11 @@ class AutonomousResearcherAgent:
             research_batch_tool: Offer ``run_research_batch``, which fans several independent
                 questions out to isolated workers in one call. Disabling it removes the tool and
                 every string that names it. Cannot be false together with ``researcher_subagent``.
-            researcher_subagent: Offer the ``researcher-agent`` sub-agent through ``task``, the
-                only single-call path for a prerequisite chain. Disabling it removes the spec and
-                every string that names it; ``task`` itself always remains, because
-                ``task(writer-agent)`` is a run exit. Cannot be false together with
+            researcher_subagent: Also offer the ``researcher-agent`` sub-agent directly through
+                ``task``, the only single-call path for a prerequisite chain. Off by default: the
+                researcher already runs every research question as the ``run_research_batch``
+                worker, so this opens a second door onto that same worker. Enabling it adds the
+                spec and the strings that name it. Cannot be false together with
                 ``research_batch_tool``.
             shallow_subagent: Offer the ``shallow-researcher`` sub-agent, which answers an easy
                 request end to end and whose report finishes the run without a further

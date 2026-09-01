@@ -132,7 +132,7 @@ _SOURCE_TOOL_NAMES = frozenset(t.name for t in _STUB_SOURCE_TOOLS)
 
 
 # =================================================================================================
-# Probe corpus — 24 items, 6 per bucket
+# Probe corpus — 36 items, 6 per bucket
 # =================================================================================================
 # Buckets are named for the ROUTE they should elicit, not for a category the request belongs to.
 # The prompt states three properties (could one agent finish the whole thing; do the unknowns
@@ -171,6 +171,35 @@ SEVERAL_INDEPENDENT_UNKNOWNS = [
     "What are the current central bank interest rates in the US, the UK, and Japan?",
     "How do the launch costs of Falcon 9, Electron, and Ariane 6 compare?",
     "What are the current minimum wages in Germany, France, and Spain?",
+]
+
+# The two buckets below split on the SHAPE OF THE ANSWER SET, which is what
+# _SHALLOW_SUBAGENT_DESCRIPTION keys on since 2026-08-31. They are the probe for recommendation N2
+# (see misc/autonomous_researcher/autonomous-researcher-f1-and-token-recommendations.md 8.3-8.4).
+#
+# Both buckets stack conditions and both have short answers, so the OLD rule ("narrows a set in
+# steps ... two number conditions stacked") would have sent every item in both of them away from
+# shallow-researcher. Only the winner-selection half should go. Items are written fresh rather than
+# lifted from DeepSearchQA, per the no-worked-examples convention above _SHALLOW_SUBAGENT_DESCRIPTION.
+
+ENUMERATE_SET = [
+    "Which EU member states have both a statutory minimum wage above EUR 1,500 per month and "
+    "an unemployment rate below 6%?",
+    "List every US state that has no individual income tax and a population above 3 million.",
+    "Which G20 countries have ratified the High Seas Treaty and also set a net-zero target before 2050?",
+    "Give me all the Premier League clubs that have won the competition at least twice and "
+    "currently play in a stadium holding more than 40,000.",
+    "Which national parks in Canada are both UNESCO World Heritage sites and larger than 10,000 square kilometres?",
+    "Name every element in the periodic table that is liquid at 300 K and has an atomic number below 90.",
+]
+
+SELECT_ONE_WINNER = [
+    "Which EU member state has the highest statutory minimum wage per month?",
+    "Of the US states with no individual income tax, which has the largest population?",
+    "Which G20 country cut its greenhouse gas emissions the most between 2015 and 2023?",
+    "Which Premier League club has the largest stadium capacity?",
+    "Which Canadian national park is the largest by area?",
+    "Among the world's container ports, which handled the most TEU in the most recent full year?",
 ]
 
 STRUCTURE_FIXED = [
@@ -354,6 +383,36 @@ async def test_fixed_structure_plans_before_researching(probe_llm_provider, quer
     assert "planner-agent" in turn.subagent_types, f"{query!r} -> {turn}"
 
 
+@pytest.mark.parametrize("query", ENUMERATE_SET)
+async def test_multi_condition_enumerations_go_to_the_shallow_researcher(probe_llm_provider, query):
+    """N2, positive half: stacked conditions must NOT push an enumeration off the cheap path.
+
+    These are the items the pre-2026-08-31 wording lost. Pooled over 1,259 Fetch-disabled trials,
+    shallow scores 0.646 on this shape against the deep paths' 0.605, at roughly a fifth of the
+    tokens - the extra ~30 searches buy nothing because the shape is graded, so partial coverage
+    already earns partial credit.
+    """
+    turn = await _first_turn(probe_llm_provider, query)
+    assert not turn.direct_searches, f"{query!r} searched directly -> {turn}"
+    assert turn.subagent_types == ["shallow-researcher"], f"{query!r} -> {turn}"
+
+
+@pytest.mark.parametrize("query", SELECT_ONE_WINNER)
+async def test_winner_selection_does_not_go_to_the_shallow_researcher(probe_llm_provider, query):
+    """N2, negative half: naming one winner needs every candidate priced first.
+
+    This shape is all-or-nothing - 98% of those trials score exactly 0 or exactly 1 - because a
+    winner named from partial coverage is wrong, not incomplete, and the shallow exit publishes it
+    as the final answer. Measured 0.325 shallow against 0.515 on the deep paths.
+
+    Deliberately asserts only that shallow is declined. Which fan-out path takes it is not
+    something the pooled data separates: `planner` and `no-planner-deep` are statistically
+    indistinguishable from each other on F1.
+    """
+    turn = await _first_turn(probe_llm_provider, query)
+    assert "shallow-researcher" not in turn.subagent_types, f"{query!r} -> {turn}"
+
+
 @pytest.mark.parametrize("query", SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED)
 async def test_shallow_researcher_is_not_used_for_work_that_must_be_split(probe_llm_provider, query):
     """The counterweight to the bucket above: cheapest-first must not become cheapest-always.
@@ -378,7 +437,12 @@ SOURCE_NAMED = [
 
 @pytest.mark.parametrize(
     "query",
-    NO_RESEARCH + EASY_SINGLE_AGENT + SEVERAL_INDEPENDENT_UNKNOWNS + STRUCTURE_FIXED,
+    NO_RESEARCH
+    + EASY_SINGLE_AGENT
+    + SEVERAL_INDEPENDENT_UNKNOWNS
+    + STRUCTURE_FIXED
+    + ENUMERATE_SET
+    + SELECT_ONE_WINNER,
 )
 async def test_orchestrator_never_opens_with_a_direct_search(probe_llm_provider, query):
     """The 2-call direct budget is for verifying a researcher's result, so turn 1 never uses it.

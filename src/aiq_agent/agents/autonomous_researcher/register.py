@@ -149,12 +149,25 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         ge=1,
         description="Maximum concrete inputs accepted by batch-capable source tool wrappers.",
     )
-    # --- Delegated research paths (eval A/B) -----------------------------------------------------
-    # Two doors onto one capability. `run_research_batch` fans N independent questions out to N
-    # isolated workers in a single call; `task(subagent_type="researcher-agent")` hands ONE topic to
-    # one worker that may hop between searches. Both are default-on, which is the shipped behavior.
+    # --- Delegated research paths ----------------------------------------------------------------
+    # Two DOORS onto ONE worker. The researcher itself is not a flag: `build_researcher_runnable`
+    # is what executes every research question either way. What these flags choose is how the
+    # orchestrator reaches it.
     #
-    # Turning exactly one off is an A/B arm, not a supported production mode. Every string that
+    #   `research_batch_tool`  -> run_research_batch, which fans N independent questions out to N
+    #                             isolated researcher workers in a single call.
+    #   `researcher_subagent`  -> task(subagent_type="researcher-agent"), which hands ONE topic to
+    #                             one worker that may hop between searches.
+    #
+    # SHIPPED DEFAULT: batch open, direct door closed. The researcher is reachable only as the
+    # run_research_batch worker. The batch is the better-behaved path for the same capability - it
+    # fans out, it charges its queries against one ceiling, and its results arrive already digested
+    # - while the direct door's one distinctive shape, the prerequisite chain, is covered on turn
+    # one by shallow-researcher (see the chain trigger in _SHALLOW_SUBAGENT_DESCRIPTION) and by the
+    # link-at-a-time wording the loop guidance renders when this flag is off.
+    #
+    # Opening the direct door is supported - set researcher_subagent: true - and is how the
+    # subagent-only and both-doors eval arms are built. Both cannot be false. Every string that
     # names a door - the orchestrator prompt, the subagent descriptions, the run_research_batch
     # description, the shallow failure notice, and the loop guard's blocked-tool messages - is gated
     # on these flags, because in this agent descriptions ARE the routing logic: a stale mention
@@ -165,19 +178,20 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         default=True,
         description=(
             "Offer the run_research_batch tool, which fans several independent research questions "
-            "out to isolated workers in one call. Disabling it removes the tool, its sanitizer "
-            "allowlist entry, and every prompt or description that names it. Cannot be disabled "
-            "together with researcher_subagent."
+            "out to isolated researcher workers in one call. This is the default research path. "
+            "Disabling it removes the tool, its sanitizer allowlist entry, and every prompt or "
+            "description that names it. Cannot be disabled together with researcher_subagent."
         ),
     )
     researcher_subagent: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Offer the researcher-agent sub-agent through task(), which investigates ONE topic "
-            "end to end in an isolated context and is the only single-call path for a prerequisite "
-            "chain. Disabling it removes the subagent spec and every prompt or description that "
-            "names it; task() itself always remains, because task(writer-agent) is a run exit. "
-            "Cannot be disabled together with research_batch_tool."
+            "Also offer the researcher-agent sub-agent directly through task(), which investigates "
+            "ONE topic end to end in an isolated context and is the only single-call path for a "
+            "prerequisite chain. Off by default: the researcher still runs every research question "
+            "as the run_research_batch worker, so this flag opens a second door onto that same "
+            "worker rather than enabling it. Enabling it adds the subagent spec and the prompt and "
+            "description text that names it. Cannot be disabled together with research_batch_tool."
         ),
     )
     # Deliberately named `shallow_subagent`, not the adaptive arm's `single_shot_shallow_subagent`:
