@@ -87,6 +87,9 @@ class TestConfigSurface:
         assert fields["shallow_subagent"].default is True, "default-on: the easy request is the common case"
         assert fields["shallow_subagent_max_llm_turns"].default == 10
         assert fields["shallow_subagent_max_tool_iterations"].default == 5
+        assert fields["shallow_subagent_escalate_on_budget_exhaustion"].default is True, (
+            "default-on: a truncated report that ends the run scored -0.155 F1 against runs that did not"
+        )
 
     @pytest.mark.parametrize("knob", ["shallow_subagent_max_llm_turns", "shallow_subagent_max_tool_iterations"])
     def test_shallow_loop_bounds_must_be_positive(self, knob):
@@ -100,6 +103,7 @@ class TestConfigSurface:
             "shallow_subagent=config.shallow_subagent",
             "shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns",
             "shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations",
+            "shallow_subagent_escalate_on_budget_exhaustion=config.shallow_subagent_escalate_on_budget_exhaustion",
         ):
             assert forwarded in source, forwarded
 
@@ -132,6 +136,10 @@ class TestShippedConfig:
 
     def test_config_enables_the_shallow_subagent(self, config):
         assert config["functions"]["autonomous_research_agent"]["shallow_subagent"] is True
+
+    def test_config_fails_the_shallow_subagent_on_budget_exhaustion(self, config):
+        agent = config["functions"]["autonomous_research_agent"]
+        assert agent["shallow_subagent_escalate_on_budget_exhaustion"] is True
 
 
 class TestSubmitFinalReport:

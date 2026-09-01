@@ -215,6 +215,21 @@ class AutonomousResearchAgentConfig(FunctionBaseConfig, name="autonomous_researc
         ge=1,
         description="Maximum tool-calling iterations inside one shallow-researcher sub-run.",
     )
+    # Default-on because the alternative is not "a shorter answer" but "a confident wrong one".
+    # Measured over 327 dsqa90 T3 trials: runs that hit the cap and synthesized anyway average
+    # 0.272 F1 against 0.484, a within-question delta of -0.155 (permutation p = 0.0027) with a
+    # 59% zero rate. The truncated report is committed and ends the run, so nothing downstream can
+    # tell it from a researched one. See
+    # misc/autonomous_researcher/autonomous-researcher-t3-consistency-analysis.md section 5.
+    shallow_subagent_escalate_on_budget_exhaustion: bool = Field(
+        default=True,
+        description=(
+            "Treat an exhausted shallow tool-iteration budget as a failure rather than synthesizing "
+            "a final answer from the partial evidence in hand. The failure notice returns to the "
+            "orchestrator, which escalates to ordinary delegated research instead of ending the run "
+            "on a truncated report. Set false to restore forced synthesis."
+        ),
+    )
     # Retrieval narrowing for the sub-run only. `tools` / `exclude_tools` above are global: they
     # decide what the whole agent can reach, so they cannot express "the orchestrator keeps both
     # web tools but the shallow sub-run only gets the wide one". These two do exactly that, and
@@ -363,6 +378,7 @@ async def autonomous_research_agent(config: AutonomousResearchAgentConfig, build
             shallow_subagent=config.shallow_subagent,
             shallow_subagent_max_llm_turns=config.shallow_subagent_max_llm_turns,
             shallow_subagent_max_tool_iterations=config.shallow_subagent_max_tool_iterations,
+            shallow_subagent_escalate_on_budget_exhaustion=config.shallow_subagent_escalate_on_budget_exhaustion,
             shallow_subagent_tools=config.shallow_subagent_tools,
             shallow_subagent_exclude_tools=config.shallow_subagent_exclude_tools,
         )

@@ -228,6 +228,27 @@ class AutonomousResearchGraphRun:
 # same bounded coverage still earns its share — and the deep path's extra ~30 searches buy nothing
 # there (0.605 against 0.646).
 #
+# WHEN TO CHOOSE IT is keyed on that interaction through one request property: is the candidate
+# set CLOSED (nameable now, a standard roster, or returned whole by one lookup against a source the
+# request names) or OPEN (buildable only by traversing a source exhaustively before any condition
+# applies)? That property, not the answer's shape, is what the interaction above is really
+# measuring: "select one winner" only hurt the shallow path when the candidates had to be
+# discovered first, because that is the case where a bounded run cannot know it missed one.
+#
+# The discriminator comes from the per-query report, which grouped all 90 questions into solvability
+# tiers: every one of the 48 T1/T2 questions has a closed set (roster given, standard roster, or one
+# named source yields it), while the open-set questions concentrate in T3/T4. It also subsumes two
+# shapes the old wording sent to the planner by mistake - a superlative that only scopes a subset
+# ("of the top 5 states, which ...") and a tie-break cascade ("if more than one remains, then ..."),
+# neither of which changes the population being filtered. See
+# misc/autonomous_researcher/autonomous-researcher-per-query-path-analysis.md sections 5.2 and 5.5.
+#
+# The WIDE clause in WHEN NOT TO CHOOSE IT is the guard that makes this safe rather than a way to
+# overload a capped loop: a set can be closed and still have far more members than
+# `shallow_subagent_max_tool_iterations` can price one at a time, which is exactly the >~12-search
+# regime measured above. It names the fan-out door and not the planner, because a known set has
+# nothing left to plan.
+#
 # Chained lookups are routed here too, and that is a cost decision rather than an accuracy claim:
 # a short chain the shallow loop can walk on its own costs one sub-run, where the deep path costs
 # a plan, a delegation per link, and a synthesis pass. `researcher-agent` still owns chains, but
@@ -245,6 +266,13 @@ Answer the whole request in one bounded run and hand back the finished, cited an
 
 WHEN TO CHOOSE IT:
 - The request asks for one standing fact — a value, a date, a name, a definition.
+- The set of candidates is CLOSED: you can name every member now — the request lists them, or \
+they are a standard published set — or ONE lookup against a source the request names returns the \
+whole set. Once the set is closed it does not matter what the answer looks like: one winner, a \
+filtered subset, or a cascade of tie-breakers are all one pass over the same members.
+- Narrowing is only a STAGE when the SET ITSELF changes — when answering one part tells you which \
+DIFFERENT population to go and find next. Applying more conditions to the same closed set is not a \
+stage, however many conditions stack and however the request numbers them.
 - The request asks for EVERY member that meets stated conditions. Extra conditions do not \
 disqualify it: cutting a group down by three thresholds is still one list, and each member you \
 confirm counts.
@@ -252,16 +280,20 @@ confirm counts.
 — and roughly a dozen searches will walk it. This is the cheapest way to answer a chain, so \
 prefer it here.
 - Judge the REQUEST, not the topic. A specialist subject can still be one lookup.
-- If you are torn between this and planning the request out, and the answer is a fact or a list, \
-choose this.
+- If you are torn between this and planning the request out, and the set of candidates is \
+closed, choose this.
 
 WHEN NOT TO CHOOSE IT:
-- The request asks you to pick ONE WINNER out of a group you have to price yourself. Read it off \
-the wording: a superlative — most, greatest, highest, largest, fewest, best — or any ranking whose \
-answer is a single member. You cannot name a winner until you hold a value for EVERY candidate on \
-one definition, so a run that covers most of them answers WRONGLY rather than incompletely, and \
-your answer ends the run. Send those to planner-agent or {staged_route}. Exception: the request \
-names the candidates itself and one run can price them all.
+- The set of candidates is OPEN: no list is given, none is standard, and no single named source \
+returns it — you would have to build the set yourself by working through a source exhaustively \
+before any condition applies. You can never be sure you have every member, so a partial set gives \
+a WRONG answer rather than a short one, and your answer ends the run. Send these to planner-agent \
+or {staged_route}.
+- The request narrows in STAGES in the sense above: a later part needs a DIFFERENT population that \
+only an earlier answer identifies. That is planner-agent's trigger.
+- The set is closed but WIDE: checking it means a separate lookup per member and there are more \
+members than roughly a dozen searches can cover. Send it to {staged_route} — not planner-agent, \
+because the set is already known and there is nothing to plan.
 - The user fixed the shape of the deliverable — named sections, a comparison matrix, a briefing, \
 a report. That is planner-agent's trigger.
 - The request carries three or more separate deliverables, or a parent report is mounted for it. \
@@ -296,10 +328,10 @@ original request, so it needs no extra context from you."""
 def build_shallow_subagent_description(*, research_batch_enabled: bool) -> str:
     """Build ``shallow-researcher``'s description for the configured research doors.
 
-    Two clauses name a door and must follow it. WHEN NOT TO CHOOSE IT points select-one-winner
-    requests at a fan-out path, and IF IT FAILS names the escalation route - and that second one
-    is the only escalation path in the whole design, because on success the runtime ends the run
-    and the orchestrator never gets another turn.
+    Three clauses name a door and must follow it. WHEN NOT TO CHOOSE IT points open-set requests
+    at a fan-out path and closed-but-wide ones at the same door, and IF IT FAILS names the
+    escalation route - and that last one is the only escalation path in the whole design, because
+    on success the runtime ends the run and the orchestrator never gets another turn.
 
     Args:
         research_batch_enabled: Whether ``run_research_batch`` is offered on the orchestrator.
@@ -332,8 +364,9 @@ chain plus what you already tried, so it does not repeat you.
 digested into notes before it reaches you instead of piling up in your context.
 
 WHEN NOT TO CHOOSE IT:
-- Nothing has happened yet this run and the whole request is one lookup, one list, or one short \
-chain. That is shallow-researcher's trigger, and it is available on turn one only.
+- Nothing has happened yet this run and the whole request is one lookup, one short chain, or one \
+pass over a CLOSED set of candidates. That is shallow-researcher's trigger, and it is available on \
+turn one only.
 - You have several INDEPENDENT questions. {independent_route}.
 - Two delegations would aim at the same unresolved fact, or you cannot write a delegation's text \
 until another one has answered. Wait instead.
@@ -432,18 +465,20 @@ WHEN TO CHOOSE IT — any ONE of these is enough:
 - The answer's structure has to be fixed before research: a sectioned report, a comparison matrix, \
 a briefing. This also means you intend to publish through writer-agent, which reads its output \
 contract from the plan.
-- The request must price a whole candidate group before it can name ONE winner — a superlative or \
-ranking over a group it does not enumerate for you, or two publishers named for two facts to be \
-compared. Judge the wording, not how long the answer will be: it fires *because* the reply is one \
-line, since a winner picked from partial coverage is wrong rather than incomplete.
+- The set of candidates is OPEN: the request names no list, there is no standard one, and no \
+single named source returns it, so the set has to be built by exhaustive traversal before any \
+condition applies. Or the request narrows in STAGES: a later part needs a DIFFERENT population \
+that only an earlier answer identifies. Both fail quietly in a bounded run: a winner chosen from a \
+partial set is wrong rather than incomplete, and a wrong first stage spoils every stage after it.
 - A parent report is mounted for this request.
-- You are unsure which of the above applies but the request is clearly more than a lookup: plan \
-it. A plan is the normal first move for a request shallow-researcher declined.
 
 WHEN NOT TO CHOOSE IT:
 - The request asks for every member meeting stacked conditions. That is an enumeration and belongs \
 to shallow-researcher, not here.
-- The request names the candidates itself, or one source and one condition covers it.
+- The set of candidates is CLOSED, however the answer is shaped. One winner, a filtered subset, \
+and a cascade of tie-breakers over one known set all belong to shallow-researcher. A closed set \
+that is too wide for one bounded pass still needs no plan: shallow-researcher's WIDE clause names \
+the fan-out door for it.
 - You can already write every query the request needs. {fan_out_route}; a plan buys nothing there \
 and costs a full sub-agent run before any evidence arrives.
 - Research has already begun. A plan written after results are in hand cannot account for what you \
@@ -987,6 +1022,7 @@ def build_autonomous_research_graph(
     shallow_subagent: bool = True,
     shallow_subagent_max_llm_turns: int = DEFAULT_SHALLOW_SUBAGENT_MAX_LLM_TURNS,
     shallow_subagent_max_tool_iterations: int = DEFAULT_SHALLOW_SUBAGENT_MAX_TOOL_ITERATIONS,
+    shallow_subagent_escalate_on_budget_exhaustion: bool = True,
     shallow_subagent_tools: Sequence[str] | None = None,
     shallow_subagent_exclude_tools: Sequence[str] | None = None,
 ) -> AutonomousResearchGraphRun:
@@ -1003,6 +1039,8 @@ def build_autonomous_research_graph(
         shallow_subagent: Whether to offer the ``shallow-researcher`` sub-agent for this request.
         shallow_subagent_max_llm_turns: LLM-turn bound inside the shallow sub-run.
         shallow_subagent_max_tool_iterations: Tool-call bound inside the shallow sub-run.
+        shallow_subagent_escalate_on_budget_exhaustion: Whether an exhausted shallow tool-call budget
+            fails and escalates instead of synthesizing a partial answer that ends the run.
 
     Returns:
         The compiled runnable plus the run-scoped shallow capture, as an
@@ -1150,6 +1188,7 @@ def build_autonomous_research_graph(
             ),
             max_llm_turns=shallow_subagent_max_llm_turns,
             max_tool_iterations=shallow_subagent_max_tool_iterations,
+            escalate_on_budget_exhaustion=shallow_subagent_escalate_on_budget_exhaustion,
         )
 
     # The full menu the configured doors allow. Source tools sit alongside run_research_batch and

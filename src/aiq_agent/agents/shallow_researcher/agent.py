@@ -228,6 +228,20 @@ def _format_citation_repair_sources(sources: Sequence[SourceEntry]) -> str:
     return "\n".join(lines)
 
 
+class ResearchBudgetExhaustedError(RuntimeError):
+    """Raised when the tool-iteration budget runs out before the agent has an answer.
+
+    This is an escalation trigger, not a bug. The alternative — synthesizing whatever partial
+    evidence is in hand — returns a *confident* answer built on an admittedly incomplete search,
+    and downstream there is nothing that can tell it apart from a researched one: the autonomous
+    arm's ShallowFinalizationMiddleware commits it and ends the run without another orchestrator
+    turn. Raising instead routes the request through the ordinary shallow-failure path, which the
+    orchestrator can act on.
+
+    Only raised when ``escalate_on_budget_exhaustion`` is set; the default keeps forced synthesis.
+    """
+
+
 class ShallowResearcherAgent:
     """
     Shallow research agent for fast, bounded research with tool-calling.
@@ -263,6 +277,7 @@ class ShallowResearcherAgent:
         max_tool_iterations: int = 5,
         citation_repair_timeout: float = 60.0,
         enforce_citations: bool = False,
+        escalate_on_budget_exhaustion: bool = False,
         callbacks: list[Any] | None = None,
     ) -> None:
         """
@@ -281,6 +296,10 @@ class ShallowResearcherAgent:
             enforce_citations: Whether missing or invalid citation integrity
                                should fail the run instead of returning the
                                generated answer (default False).
+            escalate_on_budget_exhaustion: Whether exhausting max_tool_iterations
+                               should raise ResearchBudgetExhaustedError instead
+                               of forcing synthesis of a partial answer
+                               (default False).
             callbacks: Optional list of LangGraph callbacks.
         """
         self.llm_provider = llm_provider
@@ -289,6 +308,7 @@ class ShallowResearcherAgent:
         self.max_tool_iterations = max_tool_iterations
         self.citation_repair_timeout = citation_repair_timeout
         self.enforce_citations = enforce_citations
+        self.escalate_on_budget_exhaustion = escalate_on_budget_exhaustion
         self.callbacks = callbacks or []
 
         # Load prompts
@@ -428,6 +448,13 @@ class ShallowResearcherAgent:
 
             try:
                 draft_config = {"tags": [SUPPRESS_OUTPUT_ARTIFACT_TAG]}
+                if iterations >= self.max_tool_iterations and self.escalate_on_budget_exhaustion:
+                    # Hand the request back rather than answer from a search that is known to be
+                    # incomplete. See
+                    # ResearchBudgetExhaustedError for why a truncated answer is worse than none.
+                    logger.warning("Max iterations (%d) reached; failing instead of forcing synthesis.", iterations)
+                    raise ResearchBudgetExhaustedError()
+
                 if iterations >= self.max_tool_iterations:
                     logger.warning("Max iterations (%d) reached. Forcing synthesis.", iterations)
 

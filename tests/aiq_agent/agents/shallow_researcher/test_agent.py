@@ -28,6 +28,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 
+from aiq_agent.agents.shallow_researcher.agent import ResearchBudgetExhaustedError
 from aiq_agent.agents.shallow_researcher.agent import ShallowResearcherAgent
 from aiq_agent.agents.shallow_researcher.agent import _append_minimal_citation
 from aiq_agent.agents.shallow_researcher.agent import _format_chat_references
@@ -480,6 +481,34 @@ class TestShallowResearcherAgent:
         assert result is not None
         # The unbounded LLM should have been called (without tools)
         mock_llm.ainvoke.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_budget_exhaustion_raises_when_configured(self, mock_llm_provider, mock_llm, real_tool):
+        """With the toggle on, reaching the cap fails instead of synthesizing a partial answer."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Forced synthesis response"))
+
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[real_tool],
+            max_tool_iterations=3,
+            escalate_on_budget_exhaustion=True,
+        )
+
+        state = ShallowResearchAgentState(
+            messages=[HumanMessage(content="Test query")],
+            tool_iterations=3,
+        )
+
+        with pytest.raises(ResearchBudgetExhaustedError):
+            await agent.run(state)
+
+        # The whole point: no answer is synthesized from the partial evidence.
+        mock_llm.ainvoke.assert_not_called()
+
+    def test_budget_exhaustion_defaults_to_forced_synthesis(self):
+        """The toggle is opt-in, so the standalone agent keeps its existing behaviour."""
+        agent = ShallowResearcherAgent(llm_provider=MagicMock(), tools=[])
+        assert agent.escalate_on_budget_exhaustion is False
 
     def test_state_has_tool_iterations_field(self):
         """Test that ShallowResearchAgentState has tool_iterations field."""
