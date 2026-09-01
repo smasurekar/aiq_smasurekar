@@ -325,6 +325,12 @@ DELEGATION BRIEF:
 original request, so it needs no extra context from you."""
 
 
+# The page-opening tool, by the name the prompts spell out. Gating on the literal name is
+# deliberate: the prompt passages name `fetch_url_tool` in text, so if a deployment registers the
+# page reader under some other key those passages are wrong regardless and must not be rendered.
+FETCH_URL_TOOL_NAME = "fetch_url_tool"
+
+
 def build_shallow_subagent_description(*, research_batch_enabled: bool) -> str:
     """Build ``shallow-researcher``'s description for the configured research doors.
 
@@ -1107,9 +1113,19 @@ def build_autonomous_research_graph(
 
     # One researcher prompt render, shared by the batch workers and the task-reachable subagent,
     # so the two paths cannot drift.
+    # Four prompt passages instruct the model to open pages with `fetch_url_tool`. `exclude_tools`
+    # can remove it, and until this flag existed those passages still rendered - telling a worker to
+    # call a tool it did not hold, on exactly the table-and-filing questions it most needed it for.
+    # Every other door in this agent is gated on the flag that provides it; this one was not. See
+    # misc/autonomous_researcher/autonomous-researcher-t3-consistency-analysis.md section 9.4.
+    fetch_url_enabled = any(
+        getattr(tool, "name", "") == FETCH_URL_TOOL_NAME for tool in context.tool_set.research_source_tools
+    )
+
     researcher_prompt = context.render_prompt(
         "researcher",
         tools=context.tool_set.tools_info,
+        fetch_url_enabled=fetch_url_enabled,
         execution_enabled=context.runtime.execution_enabled,
         researcher_source_call_budgets=researcher_loop_guard.source_call_budgets.model_dump(),
         researcher_max_identical_source_calls=researcher_loop_guard.max_identical_source_calls,
@@ -1230,6 +1246,7 @@ def build_autonomous_research_graph(
         # raises at agent-node time, long after startup and every build-time test.
         research_batch_enabled=research_batch_tool,
         researcher_subagent_enabled=researcher_subagent,
+        fetch_url_enabled=fetch_url_enabled,
     )
 
     orchestrator_middleware = [

@@ -75,6 +75,12 @@ _QUERY_LOG_MAX_LENGTH = 80
 # max_research_concurrency this tool validates against and therefore cannot drift.
 # test_bound_tool_descriptions_state_no_budget_counts fails the build if a count returns.
 #
+# Fan-out default (2026-09-01): one query, width as the exception. Width does not repair the deep
+# path's defect - its zeros are candidate-set errors (deepsearchqa-0358 priced 11 of 63 candidates
+# and never held the gold answer) and parallel workers cannot correct one another. A soft preference
+# only; the enforced cap stays max_research_concurrency, interpolated above. See
+# misc/autonomous_researcher/autonomous-researcher-t3-consistency-analysis.md.
+#
 # Scope boundary (2026-08-18): this description owns the DELEGATION CONTRACT — what one
 # ResearchQuery must contain and what the call returns. It deliberately does NOT carry loop
 # control: keeping a query ledger, recovering from a thin or failed pass, and deciding whether to
@@ -89,6 +95,11 @@ Send 1-{max_research_concurrency} queries in one call; more than that is rejecte
 This is the normal way to research. A batch of ONE query is valid and is the right call for a single
 self-contained fact — prefer it over searching yourself, because a worker's search trail is digested
 before it reaches you instead of accumulating in your context.
+
+Default to a single query. Widen only for genuinely independent unknowns you can phrase right now,
+or when the user asked for several separate things. Workers cannot see each other, so a wide batch
+cannot cross-check itself. If you are widening because you are unsure, send one query and take a
+second pass instead.
 
 Each query runs as its own worker, so nothing one worker learns can inform another. If one question
 cannot be written until another is answered, that is a prerequisite chain: {chain_route}

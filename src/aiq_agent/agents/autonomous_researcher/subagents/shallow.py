@@ -121,6 +121,14 @@ section, never inside it.
 Before answering, for each entity in the `## Answer` section, name the filter it satisfies. If you \
 cannot, remove it.
 
+If you narrowed a known set, account for all of it: name the set you started from, and put every \
+member either in the answer or under `Considered and excluded`. A member in neither was never \
+checked.
+
+If the filters leave nothing, do not answer "none" yet. An empty result usually means your \
+candidate set was incomplete. Re-derive the widest filter, confirm the set was complete, and say \
+what you re-checked.
+
 When the question does not name a discrete target, answer at whatever length it warrants. There is \
 no length target here."""
 

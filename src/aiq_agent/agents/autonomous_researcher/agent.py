@@ -72,7 +72,12 @@ from .tools.finalize import FINAL_REPORT_PATH
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_RESEARCH_CONCURRENCY = 6
+# Five, not six. dsqa90 job 2026-09-01__11-56-18, mean F1 by research workers: 0.641 (0) / 0.606
+# (1-2) / 0.371 (3-5) / 0.390 (6-9) / 0.356 (10+). Difficulty selection explains part of that curve,
+# so width is not shown to cause the drop - but it does not repair it either, because the deep
+# path's zeros are candidate-set errors and no worker sees another's result. Cost control, no
+# measured accuracy cost. run_research_batch interpolates this number into its description.
+DEFAULT_MAX_RESEARCH_CONCURRENCY = 5
 PARENT_REPORT_CONTEXT_PATH = "/shared/parent_report_context.json"
 
 # Path to this agent's directory (for loading prompts)

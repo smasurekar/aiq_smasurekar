@@ -148,6 +148,11 @@ functions:
     # match max_total_research_queries in the subagent-only arm so the query ceiling binds in both.
     research_batch_tool: true
     researcher_subagent: false
+    # Per-call fan-out. dsqa90 job 2026-09-01__11-56-18, mean F1 by workers: 0.641 (0) / 0.606
+    # (1-2) / 0.371 (3-5) / 0.390 (6-9) / 0.356 (10+). Confounded with difficulty, so width is not
+    # shown to cause failure - but it does not fix it either. Narrowed to 5 as a cost control;
+    # run_research_batch interpolates this into its description.
+    max_research_concurrency: 5
     # Per-researcher budgets. Unchanged from config_adaptive_frag.yml: `depth` is a per-query
     # knob, not an effort tier, so it carries over to the autonomous agent as-is. These bound one
     # run_research_batch worker; the request-wide envelope below bounds the whole request.
