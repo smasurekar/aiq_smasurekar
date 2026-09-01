@@ -513,6 +513,7 @@ functions:
     max_llm_turns: 10
     max_tool_iterations: 5
     enforce_citations: false
+    escalate_on_budget_exhaustion: false
     verbose: true
 ```
 
@@ -523,6 +524,7 @@ functions:
 | `max_llm_turns` | `int` | `10` | Maximum number of LLM turns (includes both reasoning and tool-calling steps). |
 | `max_tool_iterations` | `int` | `5` | Maximum tool-calling iterations before forcing synthesis. |
 | `enforce_citations` | `bool` | `false` | Fail the run when citation integrity cannot be preserved. When `false`, AI-Q returns the generated answer after sanitization instead of failing solely on the citation contract. |
+| `escalate_on_budget_exhaustion` | `bool` | `false` | Hand the request back when `max_tool_iterations` is exhausted, instead of synthesizing a final answer from the partial evidence gathered so far. Off by default for this agent, which answers its caller directly: with no orchestrator above it the run raises rather than escalating anywhere. The autonomous researcher sets `shallow_subagent_escalate_on_budget_exhaustion` on, because a truncated report there would otherwise end the request outright. |
 | `verbose` | `bool` | `false` | Enable verbose logging. |
 
 ### `data_science_agent`

@@ -51,6 +51,7 @@ from aiq_agent.agents.autonomous_researcher.subagents import build_shallow_resea
 from aiq_agent.agents.autonomous_researcher.tools.finalize import FINAL_REPORT_META_PATH
 from aiq_agent.agents.autonomous_researcher.tools.finalize import FINAL_REPORT_PATH
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
+from aiq_agent.agents.shallow_researcher.agent import ResearchBudgetExhaustedError
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
@@ -82,6 +83,7 @@ def _build_subagent(
     original_query: str | None = ORIGINAL_QUERY,
     registry_middleware: SourceRegistryMiddleware | None = None,
     escalation_route: str = "run_research_batch",
+    escalate_on_budget_exhaustion: bool = True,
 ):
     """Build the sub-agent spec with a stubbed ``ShallowResearcherAgent``.
 
@@ -117,6 +119,7 @@ def _build_subagent(
             escalation_route=escalation_route,
             max_llm_turns=10,
             max_tool_iterations=5,
+            escalate_on_budget_exhaustion=escalate_on_budget_exhaustion,
         )
     return spec, capture, shallow_stub
 
@@ -396,6 +399,42 @@ class TestAdapterFailureContract:
 
         assert stub.run_call_count == 2
         assert capture.has_report and result["messages"][-1].content == SHALLOW_REPORT
+
+    async def test_budget_exhaustion_spends_the_whole_attempt_budget_at_once(self):
+        """Budget exhaustion is deterministic, so a retry would buy a second capped run."""
+        spec, capture, stub = _build_subagent(run_side_effect=lambda _n: ResearchBudgetExhaustedError())
+        result = await spec["runnable"].ainvoke(_subagent_state())
+
+        assert stub.run_call_count == 1
+        assert capture.status == "failed"
+        assert capture.attempts == MAX_SHALLOW_ATTEMPTS, "no retry: the budget is spent in one go"
+        assert capture.exhausted and not capture.has_report
+        assert "files" not in result, "a truncated run must not write the final report"
+
+        content = result["messages"][-1].content
+        assert "ResearchBudgetExhaustedError" in content
+        assert "No further shallow-researcher attempts are available" in content
+        assert "run_research_batch" in content
+
+    async def test_budget_exhaustion_does_not_end_the_run(self):
+        """The whole point of P0: the orchestrator gets a turn instead of shipping partial work."""
+        backend, tracker = _RecordingBackend(), AutonomousFinalReportCommitTracker()
+        spec, capture, _ = _build_subagent(run_side_effect=lambda _n: ResearchBudgetExhaustedError())
+        await spec["runnable"].ainvoke(_subagent_state())
+
+        middleware = _middleware(capture, backend=backend, tracker=tracker)
+        await middleware.awrap_tool_call(_task_request(), _passthrough)
+
+        assert not middleware.finalized
+        assert middleware.before_model({}, None) is None, "the run must continue"
+        assert backend.uploaded == {}, "nothing may be committed from a truncated run"
+
+    async def test_ordinary_failures_still_leave_a_retry(self):
+        """Only budget exhaustion is non-retryable; other failures keep their second attempt."""
+        spec, capture, _ = _build_subagent(run_side_effect=lambda _n: RuntimeError("transient"))
+        await spec["runnable"].ainvoke(_subagent_state())
+
+        assert capture.attempts == 1 and not capture.exhausted
 
     async def test_exhausted_budget_returns_the_notice_without_executing(self):
         """Nothing hides this sub-agent after a failure, so refusing to run is the only backstop."""

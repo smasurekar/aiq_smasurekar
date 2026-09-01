@@ -239,6 +239,16 @@ class TestShallowSubagentWiring:
         assert shallow_cls.call_args.kwargs["max_llm_turns"] == 3
         assert shallow_cls.call_args.kwargs["max_tool_iterations"] == 2
 
+    def test_budget_exhaustion_policy_is_forwarded(self, mock_llm_provider):
+        """The knob is inert unless it reaches the sub-agent that enforces it."""
+        with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
+            _build_and_capture(mock_llm_provider)
+        assert shallow_cls.call_args.kwargs["escalate_on_budget_exhaustion"] is True
+
+        with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
+            _build_and_capture(mock_llm_provider, shallow_subagent_escalate_on_budget_exhaustion=False)
+        assert shallow_cls.call_args.kwargs["escalate_on_budget_exhaustion"] is False
+
     def test_description_states_the_first_once_and_terminal_contract(self, mock_llm_provider):
         """These three rules have no runtime enforcement, so the text is the only thing carrying
         them. Assertions pin the rules, not the phrasing."""

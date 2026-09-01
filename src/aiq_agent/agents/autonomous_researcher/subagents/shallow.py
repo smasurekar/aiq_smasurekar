@@ -63,6 +63,7 @@ from langchain_core.tools import BaseTool
 
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from aiq_agent.agents.shallow_researcher.agent import AGENT_DIR as SHALLOW_AGENT_DIR
+from aiq_agent.agents.shallow_researcher.agent import ResearchBudgetExhaustedError
 from aiq_agent.agents.shallow_researcher.agent import ShallowResearcherAgent
 from aiq_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from aiq_agent.common import LLMProvider
@@ -280,6 +281,7 @@ def build_shallow_researcher_subagent(
     escalation_route: str = "run_research_batch",
     max_llm_turns: int,
     max_tool_iterations: int,
+    escalate_on_budget_exhaustion: bool = True,
 ) -> dict[str, Any]:
     """Build the ``shallow-researcher`` ``CompiledSubAgent`` spec for ``create_deep_agent``.
 
@@ -302,6 +304,9 @@ def build_shallow_researcher_subagent(
             configuration decision this module does not own.
         max_llm_turns: Shallow agent LLM-turn bound.
         max_tool_iterations: Shallow agent tool-call bound.
+        escalate_on_budget_exhaustion: Whether exhausting ``max_tool_iterations`` raises instead of
+            synthesizing a partial answer. Raising routes the request through the failure path
+            below, which is the only way the orchestrator gets a turn after this sub-agent runs.
 
     Returns:
         A DeepAgents ``CompiledSubAgent`` spec (``name`` / ``description`` / ``runnable``).
@@ -314,6 +319,7 @@ def build_shallow_researcher_subagent(
         system_prompt=_shallow_system_prompt(),
         max_llm_turns=max_llm_turns,
         max_tool_iterations=max_tool_iterations,
+        escalate_on_budget_exhaustion=escalate_on_budget_exhaustion,
         callbacks=callbacks,
     )
 
@@ -370,7 +376,14 @@ def build_shallow_researcher_subagent(
             # orchestrator a notice it can act on. This return value is the escalation trigger.
             capture.status = "failed"
             capture.error_type = type(exc).__name__
-            capture.attempts += 1
+            if isinstance(exc, ResearchBudgetExhaustedError):
+                # Budget exhaustion is deterministic, not flaky: the same bounded loop over the
+                # same query spends the same budget. Retrying buys a second capped sub-run and the
+                # same notice, so spend the whole budget now and let the notice send the
+                # orchestrator straight to delegated research.
+                capture.attempts = MAX_SHALLOW_ATTEMPTS
+            else:
+                capture.attempts += 1
             logger.warning(
                 "shallow researcher failed (%s); attempt %d/%d",
                 capture.error_type,

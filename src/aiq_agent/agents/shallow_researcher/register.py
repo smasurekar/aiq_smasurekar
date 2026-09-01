@@ -63,6 +63,16 @@ class ShallowResearchAgentConfig(FunctionBaseConfig, name="shallow_research_agen
         default=False,
         description="Fail instead of returning a generated answer when citation integrity cannot be preserved.",
     )
+    escalate_on_budget_exhaustion: bool = Field(
+        default=False,
+        description=(
+            "Hand the request back instead of returning a truncated answer when "
+            "max_tool_iterations is exhausted. Off by default here because this agent answers its "
+            "caller directly: there is no orchestrator above it, so the run raises rather than "
+            "escalating anywhere. The autonomous arm, which does have somewhere to escalate to, "
+            "sets its own copy of this knob on."
+        ),
+    )
     verbose: bool = Field(default=False, description="Whether to enable verbose logging")
 
 
@@ -182,6 +192,7 @@ async def shallow_research_agent(config: ShallowResearchAgentConfig, builder: Bu
                     max_llm_turns=config.max_llm_turns,
                     max_tool_iterations=config.max_tool_iterations,
                     enforce_citations=config.enforce_citations,
+                    escalate_on_budget_exhaustion=config.escalate_on_budget_exhaustion,
                     callbacks=callbacks,
                 )
 

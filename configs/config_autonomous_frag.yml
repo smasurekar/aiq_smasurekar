@@ -159,6 +159,14 @@ functions:
     shallow_subagent: true
     shallow_subagent_max_tool_iterations: 10
     shallow_subagent_max_llm_turns: 20
+    # Hitting the cap above is a failure, not an answer. Measured over 327 dsqa90 T3 trials: runs
+    # that exhausted the budget and synthesized anyway averaged 0.272 F1 against 0.484, a
+    # within-question delta of -0.155 (permutation p = 0.0027) with a 59% zero rate, on 14% of
+    # trials. Because the shallow report ends the request, that truncated answer shipped with
+    # nothing able to tell it from a researched one. Failing instead returns the turn to the
+    # orchestrator, which escalates to run_research_batch. See
+    # misc/autonomous_researcher/autonomous-researcher-t3-consistency-analysis.md section 5.
+    shallow_subagent_escalate_on_budget_exhaustion: true
     # Pin the sub-run to the wide retrieval tool. Offered both, the model took
     # advanced_web_search_tool (2 results) on 204 of 212 shallow searches and left
     # web_search_tool (5 results x 10000 chars) unused - and in a single bounded pass whose
