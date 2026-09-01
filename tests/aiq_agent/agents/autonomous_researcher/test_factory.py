@@ -74,6 +74,12 @@ def knowledge_search(query: str) -> str:
     return f"Docs for: {query}"
 
 
+@tool
+def fetch_url_tool(urls: list[str]) -> str:
+    """Open pages and return their text."""
+    return f"Opened: {urls}"
+
+
 @pytest.fixture
 def mock_llm_provider():
     llm = MagicMock()
@@ -104,7 +110,7 @@ def _build_and_capture(mock_llm_provider, *, state=None, tools=None, **agent_kwa
     ):
         agent = AutonomousResearcherAgent(
             llm_provider=mock_llm_provider,
-            tools=tools if tools is not None else [web_search_tool, knowledge_search],
+            tools=tools if tools is not None else [web_search_tool, knowledge_search, fetch_url_tool],
             **agent_kwargs,
         )
         state = state or AutonomousResearchAgentState(messages=[HumanMessage(content="q")])
@@ -130,7 +136,7 @@ def _build_run(mock_llm_provider, *, state=None, tools=None, **agent_kwargs):
     ):
         agent = AutonomousResearcherAgent(
             llm_provider=mock_llm_provider,
-            tools=tools if tools is not None else [web_search_tool, knowledge_search],
+            tools=tools if tools is not None else [web_search_tool, knowledge_search, fetch_url_tool],
             **agent_kwargs,
         )
         state = state or AutonomousResearchAgentState(messages=[HumanMessage(content="q")])
@@ -195,7 +201,7 @@ class TestShallowSubagentWiring:
         with patch("aiq_agent.agents.autonomous_researcher.subagents.shallow.ShallowResearcherAgent") as shallow_cls:
             _build_and_capture(mock_llm_provider)
         passed = [t.name for t in shallow_cls.call_args.kwargs["tools"]]
-        assert passed == ["web_search_tool", "knowledge_search"]
+        assert passed == ["web_search_tool", "knowledge_search", "fetch_url_tool"]
         assert "get_verified_sources" not in passed
 
     def test_the_shallow_sub_run_carries_the_answer_contract(self, mock_llm_provider):
@@ -422,12 +428,19 @@ class TestDelegationGuidanceLivesInDescriptions:
         The ceiling is the size of the ``The research loop:`` list this replaced (997 chars) plus
         headroom for the two blocks folded into it (the lookup-failure ladder and the stopping
         rules), which previously lived elsewhere in the prompt.
+
+        Raised 1600 -> 1750 on 2026-09-01 for one clause: once a shortlist exists, the next pass
+        must test what is not on it. dsqa90 job 2026-09-01__11-56-18 measured 45% of deep-path
+        queries re-pricing names already held, and the gold answer absent from the shortlist is the
+        single most replicated T3 failure. Line count is unchanged; the clause is folded into an
+        existing paragraph rather than added as one. See
+        misc/autonomous_researcher/autonomous-researcher-t3-consistency-analysis.md sections 4.1 and 9.3.
         """
         prompt = _build_and_capture(mock_llm_provider)["system_prompt"]
         section = prompt.split("# The Research Loop", 1)[1].split("\n# ", 1)[0]
         content_lines = [line for line in section.splitlines() if line.strip()]
         assert len(content_lines) <= 6, f"research loop grew to {len(content_lines)} content lines"
-        assert len(section) <= 1600, f"research loop grew to {len(section)} chars"
+        assert len(section) <= 1750, f"research loop grew to {len(section)} chars"
 
     def test_research_loop_maintainer_note_is_not_sent_to_the_model(self, mock_llm_provider):
         """The scope boundary is a Jinja comment, so it costs zero tokens per turn."""
@@ -926,7 +939,7 @@ class TestResearchDoorFlags:
         section = prompt.split("# The Research Loop", 1)[1].split("\n# ", 1)[0]
         content_lines = [line for line in section.splitlines() if line.strip()]
         assert len(content_lines) <= 6, f"{arm}: research loop grew to {len(content_lines)} content lines"
-        assert len(section) <= 1600, f"{arm}: research loop grew to {len(section)} chars"
+        assert len(section) <= 1750, f"{arm}: research loop grew to {len(section)} chars"
 
     @pytest.mark.parametrize(("arm", "batch", "subagent"), RESEARCH_ARMS)
     def test_the_decision_section_states_the_dependency_rule_generically(self, mock_llm_provider, arm, batch, subagent):
@@ -999,6 +1012,20 @@ class TestResearchDoorFlags:
             "**Send independent unknowns out together, dependent ones in order.**",
         ):
             assert sentence in prompt, sentence
+
+    def test_fetch_url_passages_vanish_when_the_tool_is_absent(self, mock_llm_provider):
+        """A prompt that names a tool the config removed sends the model after something it cannot do.
+
+        dsqa90 job 2026-09-01__11-56-18 excluded fetch_url_tool and still rendered all four
+        passages; 40% of the deep path's delegated queries were attempts to retrieve a document,
+        and one searched for a PDF filename it had already resolved. Every other door in this agent
+        is gated on the flag that provides it.
+        """
+        with_tool = _build_and_capture(mock_llm_provider)["system_prompt"]
+        without = _build_and_capture(mock_llm_provider, tools=[web_search_tool, knowledge_search])["system_prompt"]
+        assert "fetch_url_tool" in with_tool
+        assert "fetch_url_tool" not in without, "the prompt must not name a tool the agent does not hold"
+        assert "no tool here can open a page" in without, "and it must say so, so the model records a gap"
 
     def test_the_both_doors_arm_is_unchanged(self, mock_llm_provider):
         """The opt-in arm is the A/B comparison, so pin its routing text the same way."""
