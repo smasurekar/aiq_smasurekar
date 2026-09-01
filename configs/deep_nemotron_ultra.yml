@@ -1,0 +1,48 @@
+# Direct deep-research workflow for DeepSearchQA Harbor evaluations.
+
+general:
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: WARNING
+
+llms:
+  research_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3-ultra-550b-a55b
+    base_url: "http://10.86.10.114:8999/v1"
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: Web Search
+        description: Search the public web with Tavily.
+        tools:
+          - advanced_web_search_tool
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    advanced_search: true
+    max_results: 2
+
+  deep_research_agent:
+    _type: deep_research_agent
+    orchestrator_llm: research_llm
+    planner_llm: research_llm
+    researcher_llm: research_llm
+    writer_llm: research_llm
+    source_router_llm: research_llm
+    enable_citation_verification: true
+    verbose: false
+
+workflow:
+  _type: deep_research_workflow

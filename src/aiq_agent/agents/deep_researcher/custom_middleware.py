@@ -28,6 +28,7 @@ from pathlib import PurePosixPath
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware import hook_config
 from langchain.agents.middleware.types import ModelResponse
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
@@ -45,6 +46,7 @@ from aiq_agent.common.citation_verification import is_non_citable_status_output
 from aiq_agent.common.logging_utils import log_content_metadata
 from aiq_agent.common.logging_utils import payload_logging_enabled
 
+from .models import ResearchNotes
 from .resource_limits import DeepResearchResourceLimits
 from .resource_limits import StateBudgetLedger
 
@@ -61,6 +63,14 @@ _SOURCE_ROUTING_STATE_KEYS = (_SOURCE_ROUTING_PATH, "/source_routing.json")
 FINAL_REPORT_PATH = "/shared/output.md"
 FINAL_REPORT_STATE_PATHS = (FINAL_REPORT_PATH, "/output.md")
 _GENERATED_RETRY_MARKER = "aiq_generated_retry"
+_RESEARCHER_FINALIZATION_MARKER = "aiq_researcher_finalization"
+RESEARCHER_FINALIZATION_MODEL_CALLS = 1
+_RESEARCHER_FINALIZATION_PROMPT = (
+    "Your research model-call budget is exhausted. Do not call tools or continue researching. "
+    "Return your ResearchNotes now using only the existing conversation and tool-result history. "
+    "Preserve useful findings and sources gathered so far, identify unresolved gaps, and lower the "
+    "evidence confidence when support is incomplete."
+)
 _UNRESOLVED_SANDBOX_PATH_PATTERN = re.compile(
     r"<\s*sandbox_(?:artifact_dir|workdir)\s*>|\{\{\s*sandbox_(?:artifact_dir|workdir)\s*\}\}"
 )
@@ -147,7 +157,7 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
     def wrap_model_call(self, request, handler):
         """Promote JSON text, with one tools-disabled corrective call when needed."""
         response = self._promote(handler(request))
-        if not self._needs_correction(response):
+        if not self._needs_correction(response) or _is_researcher_finalization_request(request):
             return response
         logger.warning("Retrying %s as a tools-disabled JSON response", self.schema.__name__)
         return self._promote(handler(self._correction_request(request)))
@@ -155,7 +165,7 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
     async def awrap_model_call(self, request, handler):
         """Promote JSON text, with one tools-disabled corrective call when needed."""
         response = self._promote(await handler(request))
-        if not self._needs_correction(response):
+        if not self._needs_correction(response) or _is_researcher_finalization_request(request):
             return response
         logger.warning("Retrying %s as a tools-disabled JSON response", self.schema.__name__)
         return self._promote(await handler(self._correction_request(request)))
@@ -289,6 +299,107 @@ class StructuredOutputRetryGuardMiddleware(AgentMiddleware):
         """Bound the structured-output retry loop before spending another model call."""
         self._check(request)
         return await handler(request)
+
+
+def _is_researcher_finalization_request(request) -> bool:
+    """Return whether this request is the researcher's single reserved finalization turn."""
+    return bool(
+        request.messages
+        and isinstance(request.messages[-1], HumanMessage)
+        and request.messages[-1].additional_kwargs.get(_RESEARCHER_FINALIZATION_MARKER)
+    )
+
+
+class ResearcherBudgetExhaustedError(Exception):
+    """Raised when the reserved researcher finalization turn does not produce notes."""
+
+    def __init__(self, model_calls: int, max_model_calls: int) -> None:
+        self.model_calls = model_calls
+        self.max_model_calls = max_model_calls
+        super().__init__(f"Researcher exhausted its {max_model_calls}-model-call budget after {model_calls} calls")
+
+
+class ResearcherFinalizationMiddleware(AgentMiddleware):
+    """Reserve one tools-disabled model turn for finalizing partial research.
+
+    ``ModelCallLimitMiddleware`` owns ``run_model_call_count``; the two middleware
+    must be installed as a pair.
+    """
+
+    def __init__(self, *, max_model_calls: int) -> None:
+        self.max_model_calls = max_model_calls
+
+    def _request(self, request):
+        """Return the original request until the budget binds, then force finalization."""
+        calls_made = request.state.get("run_model_call_count", 0)
+        if calls_made < self.max_model_calls:
+            return request
+        logger.warning(
+            "Researcher exhausted its %d-model-call budget after %d calls; entering finalization",
+            self.max_model_calls,
+            calls_made,
+        )
+        finalization_message = HumanMessage(
+            content=_RESEARCHER_FINALIZATION_PROMPT,
+            additional_kwargs={_RESEARCHER_FINALIZATION_MARKER: True},
+        )
+        return request.override(
+            messages=[*request.messages, finalization_message],
+            tools=[],
+            tool_choice=None,
+            response_format=ToolStrategy(ResearchNotes),
+        )
+
+    @staticmethod
+    def _finalized(response: ModelResponse) -> bool:
+        """Return whether the model produced schema-valid research notes."""
+        return response.structured_response is not None
+
+    @staticmethod
+    def _has_tool_calls(response: ModelResponse) -> bool:
+        """Return whether finalization attempted a tool call instead of returning notes."""
+        return any(isinstance(message, AIMessage) and message.tool_calls for message in response.result)
+
+    def _result(self, request, response: ModelResponse) -> ModelResponse:
+        """Accept notes or tool calls, and type prose-only exhaustion for fallback handling."""
+        if not _is_researcher_finalization_request(request) or self._finalized(response):
+            return response
+        if self._has_tool_calls(response):
+            return response
+        calls_made = request.state.get("run_model_call_count", 0)
+        raise ResearcherBudgetExhaustedError(calls_made + RESEARCHER_FINALIZATION_MODEL_CALLS, self.max_model_calls)
+
+    @staticmethod
+    def _refused(request) -> ToolMessage:
+        """Build the shared result for a tool call refused after finalization."""
+        return ToolMessage(
+            content="Researcher model-call budget exhausted; this tool was not executed.",
+            tool_call_id=request.tool_call["id"],
+            name=request.tool_call.get("name"),
+            status="error",
+        )
+
+    def wrap_model_call(self, request, handler):
+        """Force one synchronous finalization call after the normal-turn budget."""
+        finalization_request = self._request(request)
+        return self._result(finalization_request, handler(finalization_request))
+
+    async def awrap_model_call(self, request, handler):
+        """Force one asynchronous finalization call after the normal-turn budget."""
+        finalization_request = self._request(request)
+        return self._result(finalization_request, await handler(finalization_request))
+
+    def wrap_tool_call(self, request, handler):
+        """Prevent a hallucinated tool call from executing after finalization."""
+        if request.state.get("run_model_call_count", 0) <= self.max_model_calls:
+            return handler(request)
+        return self._refused(request)
+
+    async def awrap_tool_call(self, request, handler):
+        """Prevent a hallucinated tool call from executing after async finalization."""
+        if request.state.get("run_model_call_count", 0) <= self.max_model_calls:
+            return await handler(request)
+        return self._refused(request)
 
 
 class FinalReportCommitTracker:
@@ -897,10 +1008,23 @@ class ToolNameSanitizationMiddleware(AgentMiddleware):
                 new_tool_calls = []
                 for tc in msg.tool_calls:
                     new_tool_calls.append({**tc, "name": self._sanitize_tool_name(tc["name"])})
-                new_msg = AIMessage(
-                    content=msg.content,
-                    tool_calls=new_tool_calls,
-                    id=msg.id,
+                additional_kwargs = dict(msg.additional_kwargs)
+                raw_tool_calls = additional_kwargs.get("tool_calls")
+                if isinstance(raw_tool_calls, list):
+                    sanitized_raw_tool_calls = []
+                    for raw_tool_call in raw_tool_calls:
+                        if not isinstance(raw_tool_call, dict) or not isinstance(raw_tool_call.get("function"), dict):
+                            sanitized_raw_tool_calls.append(raw_tool_call)
+                            continue
+                        function = dict(raw_tool_call["function"])
+                        function["name"] = self._sanitize_tool_name(str(function.get("name") or ""))
+                        sanitized_raw_tool_calls.append({**raw_tool_call, "function": function})
+                    additional_kwargs["tool_calls"] = sanitized_raw_tool_calls
+                new_msg = msg.model_copy(
+                    update={
+                        "additional_kwargs": additional_kwargs,
+                        "tool_calls": new_tool_calls,
+                    }
                 )
                 new_result.append(new_msg)
             else:

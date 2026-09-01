@@ -88,6 +88,7 @@ __all__ = [
     "get_session_registry",
     "get_latest_user_query",
     "is_postgres_dsn",
+    "is_verbose",
     "load_prompt",
     "parse_data_sources",
     "register_source_parser",
@@ -101,7 +102,6 @@ __all__ = [
 ]
 
 
-# @environment_variable AIQ_VERBOSE
 # @category Debug
 # @type bool
 # @default false

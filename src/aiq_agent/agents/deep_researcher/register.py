@@ -27,14 +27,14 @@ from pydantic import model_validator
 
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
-from aiq_agent.common import VerboseTraceCallback
 from aiq_agent.common import _create_chat_response
 from aiq_agent.common import all_mapped_tools_filtered_out
 from aiq_agent.common import filter_tools_by_sources
-from aiq_agent.common import is_verbose
 from aiq_agent.common import validate_research_source_configuration
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
 from aiq_agent.common.logging_utils import log_content_metadata
+from aiq_agent.relay.bootstrap import ensure_started as _ensure_relay_started
+from aiq_agent.relay.config import RelayConfig
 from nat.builder.builder import Builder
 from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
@@ -47,6 +47,7 @@ from nat.data_models.function import FunctionBaseConfig
 
 from .agent import DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS
 from .agent import DEFAULT_MAX_RESEARCH_CONCURRENCY
+from .agent import DEFAULT_MAX_RESEARCHER_MODEL_CALLS
 from .agent import DEFAULT_MAX_SOURCE_TOOL_BATCH_SIZE
 from .agent import DeepResearcherAgent
 from .deepagents_runtime import DeepResearchSandboxConfig
@@ -78,7 +79,6 @@ class DeepResearchAgentConfig(FunctionBaseConfig, name="deep_research_agent"):
         default_factory=list,
         description="Tool names to exclude when inheriting from registry.",
     )
-    verbose: bool = Field(default=True)
     domain_catalog_path: str | None = Field(
         default=None,
         description="Optional YAML/JSON domain catalog path for source-router-agent.",
@@ -103,6 +103,11 @@ class DeepResearchAgentConfig(FunctionBaseConfig, name="deep_research_agent"):
         default=DEFAULT_MAX_RESEARCH_CONCURRENCY,
         ge=1,
         description="Maximum ResearchQuery items accepted and run concurrently per run_research_batch call.",
+    )
+    max_researcher_model_calls: int = Field(
+        default=DEFAULT_MAX_RESEARCHER_MODEL_CALLS,
+        ge=1,
+        description="Maximum normal model turns per researcher worker before one reserved finalization turn.",
     )
     max_concurrent_source_tool_calls: int = Field(
         default=DEFAULT_MAX_CONCURRENT_SOURCE_TOOL_CALLS,
@@ -233,13 +238,11 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
         writer_llm = await builder.get_llm(config.writer_llm, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
         provider.configure(LLMRole.REPORT_WRITER, writer_llm)
 
-    verbose = is_verbose(config.verbose)
-    callbacks = [VerboseTraceCallback()] if verbose else []
+    callbacks: list = []
 
     agent = DeepResearcherAgent(
         llm_provider=provider,
         tools=tools,
-        verbose=verbose,
         callbacks=callbacks,
         domain_catalog_path=config.domain_catalog_path,
         enable_source_router=config.enable_source_router,
@@ -247,6 +250,7 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
+        max_researcher_model_calls=config.max_researcher_model_calls,
         max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
         max_source_tool_batch_size=config.max_source_tool_batch_size,
         resource_limits=config.resource_limits,
@@ -276,7 +280,6 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
                 active_agent = DeepResearcherAgent(
                     llm_provider=provider,
                     tools=selected_tools,
-                    verbose=verbose,
                     callbacks=callbacks,
                     domain_catalog_path=config.domain_catalog_path,
                     enable_source_router=config.enable_source_router,
@@ -285,6 +288,7 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
                     sandbox=sandbox_config,
                     job_id=job_id,
                     max_research_concurrency=config.max_research_concurrency,
+                    max_researcher_model_calls=config.max_researcher_model_calls,
                     max_concurrent_source_tool_calls=config.max_concurrent_source_tool_calls,
                     max_source_tool_batch_size=config.max_source_tool_batch_size,
                     resource_limits=config.resource_limits,
@@ -327,11 +331,13 @@ class DeepResearchWorkflowConfig(FunctionBaseConfig, name="deep_research_workflo
         default=False,
         description="Submit deep research as an async job instead of running inline",
     )
+    relay: RelayConfig = Field(default_factory=RelayConfig, description="NeMo Relay plugins and export destinations")
 
 
 @register_function(config_type=DeepResearchWorkflowConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
 async def deep_research_workflow(config: DeepResearchWorkflowConfig, builder: Builder):
     """Wrapper workflow that accepts string queries for evaluation."""
+    await _ensure_relay_started(config.relay)
     deep_research_agent_fn = await builder.get_function("deep_research_agent")
     workflow_id = config.name or config.type
 

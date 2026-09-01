@@ -9,6 +9,12 @@ The complete AI-Q blueprint configuration using **LlamaIndex + ChromaDB** for kn
 
 This is based on `configs/config_web_default_llamaindex.yml`.
 
+```{note}
+This example preserves the shipped Lightning shallow profile. The NVIDIA API Catalog serving profile has a known
+[shallow citation-output limitation](../resources/troubleshooting.md#nemotron-35-lightning-on-nvidia-api-catalog).
+AI-Q fails closed rather than publishing citation-incomplete drafts.
+```
+
 ## Configuration
 
 ```yaml
@@ -142,7 +148,6 @@ functions:
   intent_classifier:
     _type: intent_classifier
     llm: nemotron_lightning_intent_llm
-    verbose: true
     tools:
       - web_search_tool
       # - paper_search_tool  # Uncomment if SERPER_API_KEY is set
@@ -156,12 +161,10 @@ functions:
       - knowledge_search
     max_turns: 3
     log_response_max_chars: 2000
-    verbose: true
 
   shallow_research_agent:
     _type: shallow_research_agent
     llm: nemotron_lightning_agent_llm
-    verbose: true
     tools:
       - web_search_tool
       - knowledge_search
@@ -175,7 +178,6 @@ functions:
     planner_llm: nemotron_ultra_llm
     researcher_llm: nemotron_ultra_llm
     writer_llm: nemotron_ultra_writer_llm
-    verbose: true
     tools:
       # - paper_search_tool  # Uncomment if SERPER_API_KEY is set
       - advanced_web_search_tool
@@ -183,7 +185,6 @@ functions:
 
 workflow:
   _type: chat_deepresearcher_agent
-  verbose: true
   enable_escalation: true
   enable_clarifier: true
   use_async_deep_research: true

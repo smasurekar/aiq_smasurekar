@@ -9,6 +9,12 @@ The complete AI-Q blueprint configuration with all features enabled: intent clas
 
 This is based on `configs/config_web_frag.yml`, which is the default for Helm deployments.
 
+```{note}
+This example preserves the shipped Lightning shallow profile. The NVIDIA API Catalog serving profile has a known
+[shallow citation-output limitation](../resources/troubleshooting.md#nemotron-35-lightning-on-nvidia-api-catalog).
+AI-Q fails closed rather than publishing citation-incomplete drafts.
+```
+
 ## Configuration
 
 ```yaml
@@ -26,12 +32,6 @@ general:
       console:
         _type: console
         level: INFO
-    # Uncomment for tracing:
-    # tracing:
-    #   phoenix:
-    #     _type: phoenix
-    #     endpoint: http://localhost:6006/v1/traces
-    #     project: dev
 
   # ---------------------------------------------------------------------------
   # Front-end: AI-Q API plugin
@@ -176,7 +176,6 @@ functions:
       - knowledge_search
     max_turns: 3                  # Max clarification rounds
     log_response_max_chars: 2000
-    verbose: true
 
   # -------------------------------------------------------------------------
   # Shallow research agent
@@ -252,13 +251,32 @@ The server starts at `http://localhost:8000`. The API docs are at `http://localh
 
 ### Docker Compose
 
+The FRAG workflow requires separately deployed RAG query and ingestion services.
+Set both endpoints to addresses that are reachable from the `aiq-agent`
+container. Container-local `localhost` points back to the AI-Q backend and is not
+a valid cross-service address.
+
+From the repository root:
+
 ```bash
-cd deploy
-cp .env.example .env
-# Edit .env with your API keys and set:
+cp deploy/.env.example deploy/.env
+# Edit deploy/.env with your API keys and these container-reachable values:
 # BACKEND_CONFIG=/app/configs/config_web_frag.yml
-docker compose up
+# RAG_SERVER_URL=http://rag-server:8081/v1
+# RAG_INGEST_URL=http://ingestor-server:8082/v1
+docker compose --env-file deploy/.env \
+  -f deploy/compose/docker-compose.yaml \
+  up -d --build --wait
 ```
+
+With the service-name endpoints shown above and both stacks running, connect
+the AI-Q backend to the RAG network:
+
+```bash
+docker network connect nvidia-rag aiq-agent
+```
+
+Repeat this command whenever the `aiq-agent` container is recreated.
 
 ### Test the Pipeline
 

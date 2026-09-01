@@ -41,6 +41,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from enum import StrEnum
+from html import escape
 from html import unescape
 from urllib.parse import parse_qs
 from urllib.parse import unquote
@@ -197,12 +198,22 @@ _TRACKING_PARAMS = frozenset(
 # delimiters that are not part of the URL. In particular, a trailing ``)`` is
 # valid when it balances an earlier ``(``, as in Wikipedia article URLs.
 _HTTP_URL_CANDIDATE_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_HTTP_MARKDOWN_LINK_CANDIDATE_RE = re.compile(
+    r"^https?://[^\s<>\"']+?\]\((?P<target>https?://[^\s<>\"']+)\)[.,;]*$",
+    re.IGNORECASE,
+)
 _URL_TRAILING_PUNCTUATION = ".,;"
 _URL_CLOSING_DELIMITERS = {")": "(", "]": "[", "}": "{"}
 
 
 def clean_extracted_url(candidate: str) -> str:
     """Remove prose wrappers from a URL without corrupting balanced delimiters."""
+    # The generic matcher starts after a Markdown link's opening bracket, so a
+    # URL label and target are captured as one candidate. Select the target only
+    # when both URLs and the closing Markdown delimiter are present; otherwise
+    # ``](`` may be literal URL content and must remain intact.
+    if markdown_link := _HTTP_MARKDOWN_LINK_CANDIDATE_RE.fullmatch(candidate):
+        candidate = markdown_link.group("target")
     cleaned = unescape(candidate).strip().rstrip(_URL_TRAILING_PUNCTUATION)
     while cleaned and (opener := _URL_CLOSING_DELIMITERS.get(cleaned[-1])):
         closer = cleaned[-1]
@@ -660,17 +671,24 @@ def _extract_title_for_url(content: str, url: str) -> str | None:
     text block.  This prevents a single block containing multiple search
     results from assigning the first result's title to every URL.
     """
+    # Connector renderers escape URL attributes. Match that exact spelling in
+    # the trusted structure while retaining the decoded URL as source identity.
+    escaped_url = escape(url, quote=True)
+
     # Find the block of text containing this URL (split by --- or double newlines)
     blocks = re.split(r"\n\n---\n\n|\n\n\n", content)
     for block in blocks:
-        if url not in block:
+        block_url = escaped_url if escaped_url in block else url
+        if block_url not in block:
             continue
-        url_pos = block.index(url)
+        url_pos = block.index(block_url)
         best_title: str | None = None
         best_distance = float("inf")
-        for pattern in _TITLE_NEAR_URL_PATTERNS:
+        for pattern_index, pattern in enumerate(_TITLE_NEAR_URL_PATTERNS):
             for title_match in pattern.finditer(block):
                 title = title_match.group(1).strip()
+                if pattern_index == 0:
+                    title = unescape(title)
                 if not title or title == url:
                     continue
                 # Prefer titles that appear before (and closest to) the URL

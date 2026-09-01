@@ -1,0 +1,210 @@
+# FreshQA evaluation of the Autonomous Researcher + Foundational RAG workflow.
+#
+# This is configs/config_autonomous_frag.yml adapted for `nat eval`: the aiq_api
+# front-end block is omitted, a judge LLM is added, and the eval section points at
+# the deterministic, seeded 100-query dataset.
+#
+# Run either config against the same eval harness to compare accuracy, tokens, and latency.
+#
+# Required env vars in deploy/.env.auto:
+#   NVIDIA_API_KEY, TAVILY_API_KEY
+#   RAG_SERVER_URL, RAG_INGEST_URL
+#   COLLECTION_NAME (defaults to kg_rag if unset)
+#
+# Run from the repository root after creating the output directory:
+#   dotenv -f deploy/.env.auto run -- \
+#     nat eval --config_file frontends/benchmarks/freshqa/configs/config_autonomous_frag_freshqa_100.yml
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: WARNING
+      file:
+        _type: file
+        path: frontends/benchmarks/freshqa/results/autonomous_frag_100/eval.log
+        level: INFO
+        mode: overwrite
+
+llms:
+  nemotron_super_llm:
+    _type: nim
+    # Inference Hub model details. NOTE: upstream 2.2.0 flags inference-api.nvidia.com as a
+    # deprecated endpoint (tests/aiq_agent/test_default_model_profiles.py). This config mirrors
+    # config_adaptive_frag.yml verbatim so the A/B hits the same endpoint on both arms; repoint
+    # both arms together when the branch moves off it.
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    # Self deployed model details:
+    # model_name: nvidia/nemotron-3-ultra-550b-a55b
+    # base_url: "http://10.86.10.114:8999/v1"
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+  # FreshEval-Relaxed judge. It uses the same NVIDIA endpoint and key as the
+  # researcher, so deploy/.env.auto needs no additional judge credential.
+  judge_llm:
+    _type: nim
+    model_name: azure/openai/gpt-5.2
+    base_url: "https://inference-api.nvidia.com/v1"
+    temperature: 0.1
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+
+  # Retrieval width, set from measurement rather than from parity with
+  # config_adaptive_frag.yml. The shallow-only arm (harbor job 2026-08-19__22-07-42, F1 0.576)
+  # ran a single Tavily tool at 5 results x 10000 chars; this arm ran 2 results with 1000-char
+  # truncation and scored 0.447. Same model, same dataset, same shallow agent - the evidence
+  # budget per search is the difference, so match the wider profile here.
+  web_search_tool:
+    _type: tavily_web_search
+    include_answer: advanced
+    max_results: 5
+    max_content_length: 10000
+    advanced_search: true
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: foundational_rag
+    collection_name: ${COLLECTION_NAME:-kg_rag}
+    top_k: 3
+    rag_url: ${RAG_SERVER_URL:-http://localhost:8081}
+    ingest_url: ${RAG_INGEST_URL:-http://localhost:8082}
+    timeout: 300
+
+  autonomous_research_agent:
+    _type: autonomous_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: nemotron_super_llm
+    researcher_llm: nemotron_super_llm
+    planner_llm: nemotron_super_llm
+    writer_llm: nemotron_super_llm
+    # Per-researcher budgets. Unchanged from config_adaptive_frag.yml: `depth` is a per-query
+    # knob, not an effort tier, so it carries over to the autonomous agent as-is. These bound one
+    # run_research_batch worker; the request-wide envelope below bounds the whole request.
+    # Shallow-researcher sub-agent: for a request one agent can finish end to end, it produces
+    # the finished cited answer in a single bounded run and the runtime ends the request on it —
+    # no orchestrator composition turn, no run_research_batch round trip. It is offered as the
+    # first entry in `task`; nothing forces the model to it, and nothing hides it afterwards.
+    # Set to false for the A/B arm that compares against the four-subagent baseline.
+    shallow_subagent: true
+    shallow_subagent_max_tool_iterations: 15
+    shallow_subagent_max_llm_turns: 30
+    # Pin the sub-run to the wide retrieval tool. Offered both, the model took
+    # advanced_web_search_tool (2 results) on 204 of 212 shallow searches and left
+    # web_search_tool (5 results x 10000 chars) unused - and in a single bounded pass whose
+    # report ends the request, those ~5 calls are all the evidence there will ever be.
+    # Scoped to the sub-run: the orchestrator and researcher-agent keep both tools.
+    shallow_subagent_tools:
+      - web_search_tool
+    researcher_loop_guard:
+      enabled: true
+      source_call_budgets:
+        low: 5
+        medium: 10
+        high: 20
+      max_identical_source_calls: 2
+      max_consecutive_thinks: 3
+    # Request-wide termination envelope. One flat budget set that ALWAYS applies — there is no
+    # per-tier lookup, so unlike the adaptive arm there is no cheap path that resolves to "no
+    # request-wide guard at all". Without this an orchestrator can spawn fresh run_research_batch
+    # calls indefinitely (each new researcher invocation resets the per-researcher budget), so a
+    # query for evidence the sources do not hold could run for hours.
+    #
+    # max_total_research_queries and the deadlines match config_adaptive_frag.yml's `deep` budgets,
+    # which is the comparable arm: the autonomous orchestrator has no tier to step down to, so it
+    # is bounded by the widest budget the adaptive agent could reach. max_total_research_queries is
+    # additionally hard-capped at 20 by DeepResearchResourceLimits.
+    #
+    # The batch, direct-search, and high-depth ceilings below are set from measurement rather than
+    # from parity, because this orchestrator holds source tools directly and adaptive `deep` does not:
+    #   max_batch_calls: 6         a runaway backstop, not a shape control: it never bound in the
+    #                              90-task job (most batches in one trial: 5). One batch remains
+    #                              the best observed shape (F1 0.571 at the lowest token cost), but
+    #                              that is guidance for the model, not a ceiling — and reaching
+    #                              this one ends research outright. What actually bounds research
+    #                              shape is the duplicate guard plus max_direct_source_calls; the
+    #                              runaway trials were direct-search loops, not batch loops. The
+    #                              change here is that task(researcher-agent) now spends it too.
+    #   max_direct_source_calls: 2 the orchestrator made 480 direct source calls against the
+    #                              adaptive arm's 34, with single trials reaching 61 and 62; those
+    #                              results are re-sent in the parent context on every later turn.
+    #   max_high_depth_queries: 1  `high` was declared on 42% of delegated queries with no
+    #                              aggregate F1 return. Extras are clamped to `medium`, not refused.
+    request_termination:
+      enabled: true
+      max_batch_calls: 6
+      max_direct_source_calls: 5
+      max_identical_direct_source_calls: 2
+      max_high_depth_queries: 3
+      max_total_research_queries: 20
+      max_orchestrator_turns: 100
+      max_identical_research_queries: 1
+      workflow_timeout_seconds: 2400
+      fallback_finalizer_timeout_seconds: 60
+      recursion_limit: 250
+    # The orchestrator holds every remaining tool DIRECTLY, alongside run_research_batch and task.
+    # Excluding a tool here is therefore the only way to keep it out of the model's hands — there
+    # is no tier ceiling and no ComplexityRouterMiddleware to hide it later.
+    #
+    # Synthesizing research APIs (you_research, you_finance_research) are excluded unconditionally
+    # in code, not here: they return their own finished cited answers, which would bypass the loop
+    # guards and the citation registry entirely.
+    exclude_tools:
+      # - web_search_tool
+      # - advanced_web_search_tool
+      - knowledge_search
+
+workflow:
+  _type: autonomous_research_workflow
+
+eval:
+  general:
+    workflow_alias: "freshqa_eval_autonomous_frag_100"
+    output_dir: frontends/benchmarks/freshqa/results/autonomous_frag_100
+    max_concurrency: 2
+    profiler:
+      compute_llm_metrics: true
+      workflow_runtime_forecast: true
+      token_uniqueness_forecast: true
+      csv_exclude_io_text: true
+      bottleneck_analysis:
+        enable_nested_stack: true
+    dataset:
+      _type: json
+      file_path: frontends/benchmarks/freshqa/data/FreshQA_v042126_100.json
+      structure:
+        question_key: question
+        answer_key: expected_output
+        generated_answer_key: generated_answer
+
+  evaluators:
+    freshqa:
+      _type: freshqa_evaluator
+      llm_name: judge_llm
+      dataset_file: frontends/benchmarks/freshqa/data/FreshQA_v042126_100.json

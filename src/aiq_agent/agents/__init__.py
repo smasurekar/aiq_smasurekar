@@ -18,6 +18,7 @@
 from .adaptive_researcher import adaptive_research_agent
 from .autonomous_researcher import autonomous_research_agent
 from .chat_researcher import chat_deepresearcher_agent
+from .data_science import data_science_agent
 from .deep_researcher import deep_research_agent
 from .shallow_researcher import shallow_research_agent
 
@@ -25,6 +26,7 @@ __all__ = [
     "adaptive_research_agent",
     "autonomous_research_agent",
     "chat_deepresearcher_agent",
+    "data_science_agent",
     "shallow_research_agent",
     "deep_research_agent",
 ]

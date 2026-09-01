@@ -41,6 +41,7 @@ from langchain.agents.middleware import ToolRetryMiddleware
 from langchain_core.tools import BaseTool
 from langgraph.store.memory import InMemoryStore
 
+from aiq_agent.agents.deep_researcher.agent import DEFAULT_MAX_RESEARCHER_MODEL_CALLS
 from aiq_agent.agents.deep_researcher.custom_middleware import EmptyContentFixMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import FinalReportCommitTracker
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
@@ -291,6 +292,10 @@ def build_adaptive_research_graph(
         current_datetime=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         max_research_concurrency=max_research_concurrency,
         resource_limits=limits,
+        # Upstream added ``max_researcher_model_calls`` as a required field: it sizes the per-worker
+        # model-call budget that ``ResearcherFinalizationMiddleware`` reserves one turn out of.
+        # Neither agent exposes a knob for it, so both take the deep researcher's default.
+        max_researcher_model_calls=DEFAULT_MAX_RESEARCHER_MODEL_CALLS,
         enable_source_router=enable_source_router,
         backend=runtime.backend,
         visibility_middleware=cross_cutting_middleware,
@@ -327,6 +332,7 @@ def build_adaptive_research_graph(
             ),
         ),
         researcher_middleware=context.middleware_set.researcher,
+        max_researcher_model_calls=context.max_researcher_model_calls,
         skill_sources=context.skill_sources(RESEARCHER_AGENT),
         backend=context.backend,
         visibility_middleware=context.visibility_middleware,
