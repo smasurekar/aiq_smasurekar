@@ -838,9 +838,6 @@ async def run_agent_job(
             relay_config = _resolve_job_relay_config(config, fn_config)
             if relay_config is not None:
                 await _ensure_relay_started_for_job(relay_config, job_id)
-            if getattr(fn_config, "type", None) == "deep_research_agent":
-                from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
-            if getattr(fn_config, "type", None) in ("deep_research_agent", "adaptive_research_agent"):
             if getattr(fn_config, "type", None) in (
                 "deep_research_agent",
                 "adaptive_research_agent",
@@ -1273,9 +1270,9 @@ def _create_agent_instance(
     6. llm_provider + tools pattern
     7. llm + tools pattern (simpler agents)
     """
-    from aiq_agent.agents.data_science.register import DataScienceAgentConfig
     from aiq_agent.agents.adaptive_researcher.register import AdaptiveResearchAgentConfig
     from aiq_agent.agents.autonomous_researcher.register import AutonomousResearchAgentConfig
+    from aiq_agent.agents.data_science.register import DataScienceAgentConfig
     from aiq_agent.agents.deep_researcher.register import DeepResearchAgentConfig
     from aiq_agent.agents.shallow_researcher.register import ShallowResearchAgentConfig
 
@@ -1311,7 +1308,7 @@ def _create_agent_instance(
         return agent_cls(
             llm_provider=llm_provider,
             tools=tools,
-            verbose=verbose,
+            verbose=getattr(fn_config, "verbose", False),
             callbacks=callbacks,
             enable_citation_verification=fn_config.enable_citation_verification,
             researcher_loop_guard=fn_config.researcher_loop_guard,
@@ -1332,7 +1329,7 @@ def _create_agent_instance(
         return agent_cls(
             llm_provider=llm_provider,
             tools=tools,
-            verbose=verbose,
+            verbose=getattr(fn_config, "verbose", False),
             callbacks=callbacks,
             domain_catalog_path=fn_config.domain_catalog_path,
             enable_source_router=fn_config.enable_source_router,

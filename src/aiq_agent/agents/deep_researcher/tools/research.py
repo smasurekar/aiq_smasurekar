@@ -39,7 +39,6 @@ from aiq_agent.relay import agent_scope
 from ..custom_middleware import ResearcherBudgetExhaustedError
 from ..models import EvidenceJudgment
 from ..models import ResearchGap
-
 from ..models import ResearchNotes
 from ..models import ResearchQuery
 from ..researcher_context import CURRENT_RESEARCHER_GUARD_STATE
@@ -129,7 +128,6 @@ async def _run_research_query(
 ) -> ResearchNotes:
     """Run one researcher worker and return its structured notes."""
     async with semaphore:
-        with agent_scope(RESEARCHER_AGENT_NAME, input_value=query) as lifecycle:
         guard_state = ResearcherRunGuardState(
             invocation_id=uuid4().hex,
             depth=normalize_research_depth(getattr(query, "depth", None)),
@@ -147,86 +145,71 @@ async def _run_research_query(
             log_content_metadata(query.query),
         )
         try:
-            try:
-                result = await researcher_runnable.ainvoke(
-                    researcher_invoke_state(query, runtime),
-                    config=researcher_invoke_config(runtime, callbacks),
-                )
-            except (ModelCallLimitExceededError, ResearcherBudgetExhaustedError):
-                logger.warning(
-                    "Researcher worker exhausted its model-call budget (query_%s)",
-                    log_content_metadata(query.query),
-                )
-                return _exhausted_research_notes(query)
-            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-                logger.warning(
-                    "Researcher worker failed (error_type=%s, query_%s)",
-                    type(exc).__name__,
-                    log_content_metadata(query.query),
-                )
-                raise RuntimeError("researcher worker failed") from exc
-            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-                logger.warning(
-                    "Researcher worker %s failed | %s",
+            with agent_scope(RESEARCHER_AGENT_NAME, input_value=query) as lifecycle:
+                try:
+                    result = await researcher_runnable.ainvoke(
+                        researcher_invoke_state(query, runtime),
+                        config=researcher_invoke_config(runtime, callbacks),
+                    )
+                except (ModelCallLimitExceededError, ResearcherBudgetExhaustedError):
+                    logger.warning(
+                        "Researcher worker %s exhausted its model-call budget (query_%s)",
+                        guard_state.invocation_id,
+                        log_content_metadata(query.query),
+                    )
+                    return _exhausted_research_notes(query)
+                except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                    logger.warning(
+                        "Researcher worker %s failed (error_type=%s, query_%s)",
+                        guard_state.invocation_id,
+                        type(exc).__name__,
+                        log_content_metadata(query.query),
+                    )
+                    raise RuntimeError("researcher worker failed") from exc
+
+                try:
+                    structured = result.get("structured_response") if isinstance(result, dict) else None
+                    if structured is None:
+                        raise _MissingStructuredResponseError(
+                            "researcher worker did not return structured ResearchNotes"
+                        )
+                    note = ResearchNotes.model_validate(structured)
+                except _MissingStructuredResponseError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - captured as per-item failure
+                    # The only place the rejected structured payload can still be inspected:
+                    # once this raises, `structured` is gone and the batch keeps only the
+                    # message text. Digest-only by default, full payload under AIQ_LOG_PAYLOADS.
+                    logger.warning(
+                        "Researcher worker %s returned unusable ResearchNotes (error_type=%s) | payload %s",
+                        guard_state.invocation_id,
+                        type(exc).__name__,
+                        log_content_metadata(structured),
+                    )
+                    raise ValueError("researcher worker returned invalid ResearchNotes") from exc
+
+                # The blocked / withdrawn / forced counters are reported once here rather than per
+                # event: the loop guard demotes its own per-block logging to DEBUG after the ceiling
+                # latches, so this line is what makes a whole eval job gradable with one grep.
+                # ``withdrawn_model_calls > 0`` alongside a non-zero ``blocked`` is the direct evidence
+                # that tool withdrawal reached the model and the model ignored it.
+                logger.info(
+                    "Researcher worker %s returned ResearchNotes | findings=%d gaps=%d sources=%d "
+                    "source_calls=%d blocked=%d exhausted=%s reason=%s withdrawn_model_calls=%d "
+                    "forced_returns=%d",
                     guard_state.invocation_id,
-                    log_content_metadata(exc),
+                    len(note.findings),
+                    len(note.gaps),
+                    len(note.sources),
+                    guard_state.source_call_count,
+                    guard_state.blocked_source_calls,
+                    guard_state.exhausted,
+                    guard_state.exhaustion_reason or "-",
+                    guard_state.tools_withdrawn_model_calls,
+                    guard_state.forced_return_model_calls,
                 )
-                raise RuntimeError(f"researcher worker failed for query {query.query!r}: {exc}") from exc
-
-            try:
-                structured = result.get("structured_response") if isinstance(result, dict) else None
-                if structured is None:
-                    raise _MissingStructuredResponseError("researcher worker did not return structured ResearchNotes")
-                note = ResearchNotes.model_validate(structured)
-            except _MissingStructuredResponseError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-                logger.warning(
-                    "Researcher worker returned invalid ResearchNotes (error_type=%s, query_%s)",
-                    type(exc).__name__,
-                    log_content_metadata(query.query),
-                )
-                raise ValueError("researcher worker returned invalid ResearchNotes") from exc
-
-            lifecycle.output = note
-            return note
-                    raise ValueError("researcher worker did not return structured ResearchNotes")
-                note = ResearchNotes.model_validate(structured)
-            except Exception as exc:  # noqa: BLE001 - captured as per-item failure
-                # The only place the rejected structured payload can still be inspected:
-                # once this raises, `structured` is gone and the batch keeps only the
-                # message text. Digest-only by default, full payload under AIQ_LOG_PAYLOADS.
-                logger.warning(
-                    "Researcher worker %s returned unusable ResearchNotes | error: %s | payload %s",
-                    guard_state.invocation_id,
-                    exc,
-                    log_content_metadata(structured),
-                )
-                raise ValueError(
-                    f"researcher worker returned invalid ResearchNotes for query {query.query!r}: {exc}"
-                ) from exc
-
-            # The blocked / withdrawn / forced counters are reported once here rather than per
-            # event: the loop guard demotes its own per-block logging to DEBUG after the ceiling
-            # latches, so this line is what makes a whole eval job gradable with one grep.
-            # ``withdrawn_model_calls > 0`` alongside a non-zero ``blocked`` is the direct evidence
-            # that tool withdrawal reached the model and the model ignored it.
-            logger.info(
-                "Researcher worker %s returned ResearchNotes | findings=%d gaps=%d sources=%d "
-                "source_calls=%d blocked=%d exhausted=%s reason=%s withdrawn_model_calls=%d "
-                "forced_returns=%d",
-                guard_state.invocation_id,
-                len(note.findings),
-                len(note.gaps),
-                len(note.sources),
-                guard_state.source_call_count,
-                guard_state.blocked_source_calls,
-                guard_state.exhausted,
-                guard_state.exhaustion_reason or "-",
-                guard_state.tools_withdrawn_model_calls,
-                guard_state.forced_return_model_calls,
-            )
-            return note
+                lifecycle.output = note
+                return note
         finally:
             CURRENT_RESEARCHER_GUARD_STATE.reset(guard_token)
 
