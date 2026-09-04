@@ -1,0 +1,210 @@
+# Autonomous Researcher + NeMo Retriever (NRL) configuration.
+#
+# The NRL counterpart to config_autonomous_frag.yml: same model, same agent, same budgets, same
+# front end. The only substantive difference is the knowledge backend — `knowledge_search` is
+# backed by an external NeMo Retriever service instead of Foundational RAG. Run either config
+# against the same eval harness to isolate the retrieval backend.
+#
+# TWO deliberate deltas from config_autonomous_frag.yml, both about making knowledge search
+# reachable. The FRAG arm registers `knowledge_search` and then excludes it, so that arm is
+# web-only in practice; an NRL arm that did the same would never touch the backend it exists to
+# measure. See the `exclude_tools` and `shallow_subagent_tools` comments below.
+#
+# Required env vars:
+#   NVIDIA_API_KEY, TAVILY_API_KEY
+#   NRL_BASE_URL, NRL_SCOPE, COLLECTION_NAME
+#
+# Compose: set BACKEND_CONFIG=/app/configs/config_autonomous_nrl.yml in deploy/.env
+# CLI:     nat serve --config_file configs/config_autonomous_nrl.yml --port 8000
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  nemotron_super_llm:
+    _type: nim
+    # Inference Hub model details. NOTE: upstream 2.2.0 flags inference-api.nvidia.com as a
+    # deprecated endpoint (tests/aiq_agent/test_default_model_profiles.py). This config mirrors
+    # config_autonomous_frag.yml verbatim so the A/B hits the same endpoint on both arms; repoint
+    # both arms together when the branch moves off it.
+    model_name: nvidia/nvidia/nemotron-3-ultra
+    base_url: "https://inference-api.nvidia.com/v1"
+    # Self deployed model details:
+    # model_name: nvidia/nemotron-3-ultra-550b-a55b
+    # base_url: "http://10.86.10.114:8999/v1"
+    temperature: 0.7
+    top_p: 0.7
+    max_tokens: 65536
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: true
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information, and open specific pages."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+          - fetch_url_tool
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search uploaded documents and files."
+        tools:
+          - knowledge_search
+
+  # Retrieval width, set from measurement rather than from parity with
+  # config_adaptive_frag.yml. The shallow-only arm (harbor job 2026-08-19__22-07-42, F1 0.576)
+  # ran a single Tavily tool at 5 results x 10000 chars; that arm ran 2 results with 1000-char
+  # truncation and scored 0.447. Same model, same dataset, same shallow agent - the evidence
+  # budget per search is the difference, so match the wider profile here.
+  web_search_tool:
+    _type: tavily_web_search
+    include_answer: advanced
+    max_results: 5
+    max_content_length: 1000
+    advanced_search: true
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  # The only tool here that OPENS a page rather than searching for one. Kept excluded below, as in
+  # config_autonomous_frag.yml, so the A/B differs only in the knowledge backend.
+  fetch_url_tool:
+    _type: web_page_fetch
+    max_urls_per_call: 4
+    max_chars_per_page: 50000
+    max_chars_per_call: 48000
+    extract_depth: advanced
+
+  # NeMo Retriever is deployed and operated independently from AI-Q.
+  #
+  # `scope` is defaulted here rather than left bare. NRL rejects an empty scope with
+  # "nemo_retriever requires an explicit nrl_scope" at config-validation time, which aborts the
+  # whole run before the agent starts; `default` is the scope the local dev deployment serves.
+  # Override NRL_SCOPE when pointing at a deployment that assigns a different one — a valid but
+  # wrong scope returns zero hits rather than an error, so it will not announce itself.
+  #
+  # NRL_BASE_URL must be routable from wherever this config runs. Inside a Harbor task container
+  # 127.0.0.1 resolves to the container itself, so the default below is the host's LAN address.
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: nemo_retriever
+    collection_name: ${COLLECTION_NAME:-financebench-hybrid}
+    top_k: 5
+    generate_summary: false
+    backend_config:
+      base_url: ${NRL_BASE_URL:-http://10.40.137.162:7670}
+      api_token: ${NRL_API_TOKEN:-}
+      scope: ${NRL_SCOPE:-default}
+      max_concurrency: ${NRL_MAX_CONCURRENCY:-8}
+      max_queued_uploads: ${NRL_MAX_QUEUED_UPLOADS:-128}
+      verify_ssl: ${NRL_VERIFY_SSL:-true}
+      collection_ttl_hours: ${NRL_COLLECTION_TTL_HOURS:-24}
+
+  autonomous_research_agent:
+    _type: autonomous_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: nemotron_super_llm
+    researcher_llm: nemotron_super_llm
+    planner_llm: nemotron_super_llm
+    writer_llm: nemotron_super_llm
+    # Delegated research paths. Two doors onto ONE worker: the researcher runnable executes every
+    # research question either way, and these flags only choose how the orchestrator reaches it.
+    # `research_batch_tool` offers run_research_batch, which fans N independent questions out to N
+    # isolated workers in one call; `researcher_subagent` offers task(researcher-agent), which
+    # sends ONE topic to one worker that may hop between searches.
+    #
+    # This deployment is batch-only, which is also the code default, matching the FRAG arm.
+    research_batch_tool: true
+    researcher_subagent: false
+    # Per-call fan-out. dsqa90 job 2026-09-01__11-56-18, mean F1 by workers: 0.641 (0) / 0.606
+    # (1-2) / 0.371 (3-5) / 0.390 (6-9) / 0.356 (10+). Confounded with difficulty, so width is not
+    # shown to cause failure - but it does not fix it either. Narrowed to 5 as a cost control.
+    max_research_concurrency: 5
+    # Per-researcher budgets, unchanged from config_autonomous_frag.yml so the arms stay comparable.
+    shallow_subagent: true
+    shallow_subagent_max_tool_iterations: 10
+    shallow_subagent_max_llm_turns: 20
+    # Hitting the cap above is a failure, not an answer. Measured over 327 dsqa90 T3 trials: runs
+    # that exhausted the budget and synthesized anyway averaged 0.272 F1 against 0.484, a
+    # within-question delta of -0.155 (permutation p = 0.0027) with a 59% zero rate, on 14% of
+    # trials. Failing instead returns the turn to the orchestrator, which escalates to
+    # run_research_batch.
+    shallow_subagent_escalate_on_budget_exhaustion: true
+    # DELTA 1 vs config_autonomous_frag.yml: knowledge_search is added here.
+    #
+    # The shallow sub-run, when it succeeds, ENDS the request — no orchestrator composition turn.
+    # With only web_search_tool pinned, a question answerable from the indexed corpus would be
+    # answered from the open web and NRL would never be called, which is the failure mode the
+    # 2026-08-31 Web+NRL run hit (7 of 256 scoreable calls reached knowledge search). Both tools
+    # are offered; the model still chooses.
+    shallow_subagent_tools:
+      - web_search_tool
+      - knowledge_search
+      # - fetch_url_tool
+    researcher_loop_guard:
+      enabled: true
+      source_call_budgets:
+        low: 5
+        medium: 10
+        high: 20
+      max_identical_source_calls: 2
+      max_consecutive_thinks: 3
+    # Request-wide termination envelope. One flat budget set that ALWAYS applies. Identical to
+    # config_autonomous_frag.yml: the backend swap must not move the budget, or the A/B confounds
+    # retrieval quality with research depth.
+    request_termination:
+      enabled: true
+      max_batch_calls: 6
+      max_direct_source_calls: 8
+      max_identical_direct_source_calls: 2
+      max_high_depth_queries: 3
+      max_total_research_queries: 20
+      max_orchestrator_turns: 100
+      max_identical_research_queries: 1
+      workflow_timeout_seconds: 2400
+      fallback_finalizer_timeout_seconds: 60
+      recursion_limit: 250
+    # DELTA 2 vs config_autonomous_frag.yml: knowledge_search is NOT excluded.
+    #
+    # The orchestrator holds every non-excluded tool directly. The FRAG arm excludes
+    # knowledge_search, making it web-only in practice; excluding it here would leave the NRL
+    # backend unreachable and the arm would measure nothing. fetch_url_tool stays excluded so the
+    # knowledge backend remains the only difference between the two arms.
+    exclude_tools:
+      # - web_search_tool
+      # - advanced_web_search_tool
+      # - knowledge_search
+      - fetch_url_tool
+
+workflow:
+  _type: autonomous_research_workflow
