@@ -102,6 +102,14 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
 
     backend: BackendType = Field(default="llamaindex", description="Knowledge backend to use")
     collection_name: str = Field(default="default", description="Name of the collection/index to search")
+    ignore_session_collection: bool = Field(
+        default=False,
+        description=(
+            "Always use collection_name, ignoring the conversation-scoped collection. "
+            "Set true for non-UI callers (evals, CLI, batch jobs) where conversation_id "
+            "is a session UUID rather than an uploaded-document collection."
+        ),
+    )
     top_k: int = Field(default=5, description="Number of results to return")
     backend_config: dict[str, object] = Field(
         default_factory=dict,
@@ -615,9 +623,14 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
         Returns:
             str: Formatted string containing relevant document excerpts with citations.
         """
-        # Determine collection: prefer session context (UI) over config default
+        # Determine collection: prefer session context (UI) over config default.
+        # In the UI the conversation id *is* the per-conversation collection that
+        # uploaded documents land in, so it must win. Non-UI callers (evals, CLI,
+        # batch jobs) also carry a conversation id -- a session UUID that names no
+        # collection -- so they set ignore_session_collection to pin collection_name
+        # instead of silently querying a collection that does not exist.
         try:
-            ctx = Context.get()
+            ctx = None if config.ignore_session_collection else Context.get()
             session_collection = ctx.conversation_id if ctx else None
             target_collection = session_collection or collection
         except Exception:
