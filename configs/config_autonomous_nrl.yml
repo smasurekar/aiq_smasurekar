@@ -135,6 +135,11 @@ functions:
     collection_name: ${COLLECTION_NAME:-financebench-hybrid}
     top_k: 5
     generate_summary: false
+    # Harbor runs this workflow through the async job API, which assigns a session
+    # UUID as the conversation id. knowledge_search otherwise prefers that id as the
+    # collection name (correct for the UI, where uploads land in a per-conversation
+    # collection) and every NRL query 404s. Pin collection_name for non-UI callers.
+    ignore_session_collection: true
     backend_config:
       base_url: ${NRL_BASE_URL:-http://10.40.137.162:7670}
       api_token: ${NRL_API_TOKEN:-}
