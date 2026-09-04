@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "status": "running",
+  "phase": "workflow",
+  "pid": 89,
+  "session_id": "b0b9a534-8f51-4138-879c-7fb683303ea9",
+  "started_at": "2026-08-21T05:51:14.826Z",
+  "updated_at": "2026-08-21T06:21:07.972Z",
+  "elapsed": "00:29:53.146",
+  "events_observed": 447,
+  "calls": {
+    "llm": {
+      "started": 142,
+      "completed": 141,
+      "in_flight": 1
+    },
+    "tool": {
+      "started": 21,
+      "completed": 20,
+      "in_flight": 1
+    },
+    "function": {
+      "started": 2,
+      "completed": 0,
+      "in_flight": 2
+    }
+  },
+  "last_event": {
+    "timestamp": "2026-08-21T06:20:59.471Z",
+    "elapsed": "00:29:44.645",
+    "event_type": "LLM_START",
+    "name": "nvidia/nvidia/nemotron-3-ultra"
+  },
+  "workflow_type": "autonomous_research_workflow"
+}

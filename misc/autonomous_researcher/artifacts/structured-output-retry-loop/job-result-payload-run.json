@@ -1,0 +1,133 @@
+{
+    "id": "972407ba-17f0-40ed-ada0-0c149679c6c6",
+    "started_at": "2026-08-21T14:11:51.667145",
+    "updated_at": "2026-08-21T14:21:43.969000",
+    "finished_at": "2026-08-21T14:21:43.969000",
+    "n_total_trials": 5,
+    "stats": {
+        "n_completed_trials": 5,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "aiq-agent__deepsearchqa-smoke": {
+                "n_trials": 5,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "correct_with_excessive_answers": 0.0,
+                        "f1_score": 0.26666666666666666,
+                        "fully_correct": 0.2,
+                        "fully_incorrect": 0.6,
+                        "grader_valid": 1.0,
+                        "precision": 0.26666666666666666,
+                        "recall": 0.26666666666666666,
+                        "reward": 0.26666666666666666
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0003__UXB2VjA"
+                        ],
+                        "0.3333333333333333": [
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "fully_correct": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa",
+                            "deepsearchqa-0002__YCdB2MT"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0003__UXB2VjA"
+                        ]
+                    },
+                    "fully_incorrect": {
+                        "1.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa"
+                        ],
+                        "0.0": [
+                            "deepsearchqa-0003__UXB2VjA",
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "correct_with_excessive_answers": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa",
+                            "deepsearchqa-0003__UXB2VjA",
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "precision": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0003__UXB2VjA"
+                        ],
+                        "0.3333333333333333": [
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "recall": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0003__UXB2VjA"
+                        ],
+                        "0.3333333333333333": [
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "f1_score": {
+                        "0.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0003__UXB2VjA"
+                        ],
+                        "0.3333333333333333": [
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    },
+                    "grader_valid": {
+                        "1.0": [
+                            "deepsearchqa-0005__ChBLchV",
+                            "deepsearchqa-0004__zZrUQiE",
+                            "deepsearchqa-0001__AN3ukZa",
+                            "deepsearchqa-0003__UXB2VjA",
+                            "deepsearchqa-0002__YCdB2MT"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 7918152,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 131419,
+        "cost_usd": null
+    }
+}

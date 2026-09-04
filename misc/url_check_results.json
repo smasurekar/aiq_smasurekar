@@ -1,0 +1,3013 @@
+{
+  "total_urls": 160,
+  "reachable": 91,
+  "unreachable": 69,
+  "reachable_pct": 56.9,
+  "by_status_code": {
+    "200": 91,
+    "302": 1,
+    "400": 6,
+    "401": 8,
+    "403": 12,
+    "404": 28,
+    "405": 2,
+    "502": 3,
+    "The read operation timed out": 3,
+    "[Errno -2] Name or service not known": 4,
+    "[Errno -5] No address associated with hostname": 1,
+    "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Hostname mismatch, certificate is not valid for 'www.mlj.goums.ac.ir'. (_ssl.c:1000)": 1
+  },
+  "by_content_type": {
+    "unknown": {
+      "reachable": 59,
+      "unreachable": 41
+    },
+    "pdf": {
+      "reachable": 8,
+      "unreachable": 7
+    },
+    "json": {
+      "reachable": 1,
+      "unreachable": 4
+    },
+    "csv": {
+      "reachable": 10,
+      "unreachable": 13
+    },
+    "asp": {
+      "reachable": 8,
+      "unreachable": 0
+    },
+    "htm": {
+      "reachable": 1,
+      "unreachable": 0
+    },
+    "ods": {
+      "reachable": 2,
+      "unreachable": 3
+    },
+    "xlsx": {
+      "reachable": 0,
+      "unreachable": 1
+    },
+    "html": {
+      "reachable": 2,
+      "unreachable": 0
+    }
+  },
+  "unreachable_urls": [
+    {
+      "url": "https://www.nationalmerit.org/s/1758/images/gid2/editor_documents/merit_sponsor_leaflet_2022.pdf",
+      "status": 302,
+      "error": "HTTP Error 302: The HTTP server returned a redirect error that would lead to an infinite loop.\nThe last 30x error message was:\nFound",
+      "samples": [
+        "dsqa_id_81"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/migr_imm1ctz?time=2022&format=TSV",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_15"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$select=line,sum(total_delays",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$select=line,delay_cause,sum(total_delays",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.csv?$where=month",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$where=month",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/earn_ses_pub1s?time=2022&format=TSV",
+      "status": 400,
+      "error": "HTTP Error 400: Bad Request",
+      "samples": [
+        "dsqa_id_170"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_CIG_002/1.0?references=all&detail=full",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_GEO_008/1.0?references=all&detail=full",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2023.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.999999.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/dataflow/STATSNZ/CEN23_HAD_020/1.0?references=all&detail=full",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2018.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.999999.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_ETH_004/1.0?references=all&detail=full",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2023.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.03.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/datastructure/STATSNZ/CEN23_HAD_020/1.0?references=all&detail=full",
+      "status": 401,
+      "error": "HTTP Error 401: Unauthorized",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://www.sciencedirect.com/science/chapter/bookseries/pii/S0065288117300020",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://animalia.bio/dwarf-shrew",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_16"
+      ]
+    },
+    {
+      "url": "https://www.researchgate.net/publication/319156390_Age_and_Growth_of_Elasmobranchs_and_Applications_to_Fisheries_Management_and_Conservation_in_the_Northeast_Pacific_Ocean",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://data.cityofnewyork.us/resource/kku6-nxdu.json?$select=line,count(*",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://www.azed.gov/data/public-data-sets",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_56"
+      ]
+    },
+    {
+      "url": "https://www.oecd.org/en/publications/health-at-a-glance-2024",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_94"
+      ]
+    },
+    {
+      "url": "https://cloud.ctbuh.org/CTBUH-100-Tallest-Buildings-1970.pdf",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_122"
+      ]
+    },
+    {
+      "url": "https://www.oecd.org/pisa/data/pisa2022/table_i_b1_2_9.xlsx",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_146"
+      ]
+    },
+    {
+      "url": "https://www.pewresearch.org/short-reads/2024/11/14/1-in-10-americans-rarely-or-never-drive-a-car",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_149"
+      ]
+    },
+    {
+      "url": "https://openprescribing.net/pcn/U05458/concessions?month=2022-12",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_161"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/share-with-drug-use-disorders.csv",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/share-with-drug-use-disorders.csv?downloadFormat=csv",
+      "status": 403,
+      "error": "HTTP Error 403: Forbidden",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/rollcalls_700_724",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/rollcalls_600_699",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-emigrants.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://files.worldhappiness.report/WHR24/Figure-2-5.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_40"
+      ]
+    },
+    {
+      "url": "https://worldhappiness.report/ed/2024/data/WHR24-Figure2-5-Changes.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_40"
+      ]
+    },
+    {
+      "url": "https://unstats.un.org/SDGAPI/v1/sdg/Indicator/Data?indicator=8.6.1&year=2022",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_52"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2048/table-1223.ods",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2050/table-3133-2021-22-q3.ods",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1223/table-1223-passenger-journeys-by-operator-2021-22-q3.ods",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.iea.org/data-and-statistics/data-product/renewable-energy-progress-tracker/bioenergy-capacity-2021.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_82"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/economy/regionalaccounts/grossdisposablehouseholdincome/bulletins/regionalgrossdisposablehouseholdincomegdhi/1997to2021/downloads/RegionalGDHI_ITL3_2021_England.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/file?uri=/businessindustryandtrade/business/activitysizeandlocation/datasets/businessbirthsbylocalauthority2021.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/download/busiest-airports-by-passenger-traffic-em8jg",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/file?uri=/businessindustryandtrade/business/activitysizeandlocation/datasets/businessdemography2021localauthority.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/CompleteBusBook_February2024.pdf",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/Route_99_Feb2024.pdf",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/RoutePDF/route099.pdf?n=202402",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d/view",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://www.ctbuh.org/knowledge/ctbuh-1970-100-tallest-buildings.pdf",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_122"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/share-with-drug-use-disorders.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/homicide-rate-unodc.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/gdp-per-capita-worldbank.csv",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://www150.statcan.gc.ca/t1/tbl1/en/csv/3510000501?download=1",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_176"
+      ]
+    },
+    {
+      "url": "https://ghdx.healthdata.org/record/ihme-data/gbd-2021-prevalence-drug-use-disorders",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/dt23_226.50.xls",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/tabn226.60.xls",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/dt23_226.60.xls",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://www.woodlandtrust.org.uk/publications/2024/12/report-and-accounts-2023-2024.pdf",
+      "status": 404,
+      "error": "HTTP Error 404: Not Found",
+      "samples": [
+        "dsqa_id_184"
+      ]
+    },
+    {
+      "url": "https://stats.oecd.org/sdmx-json/data/HEALTH/MAMMOGRAPHY.MACHINES.ALL?startTime=2023&endTime=2023&dimensionAtObservation=allDimensions&csv=true",
+      "status": 405,
+      "error": "HTTP Error 405: Method Not Allowed",
+      "samples": [
+        "dsqa_id_94"
+      ]
+    },
+    {
+      "url": "https://crashstats.nhtsa.dot.gov/Api/Public/ViewPublication/813579",
+      "status": 405,
+      "error": "HTTP Error 405: Method Not Allowed",
+      "samples": [
+        "dsqa_id_96"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?countries=all&startPeriod=2023&endPeriod=2023&format=csv",
+      "status": 502,
+      "error": "HTTP Error 502: Bad Gateway",
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?format=json",
+      "status": 502,
+      "error": "HTTP Error 502: Bad Gateway",
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?countries=all&startPeriod=2023&endPeriod=2023&format=json",
+      "status": 502,
+      "error": "HTTP Error 502: Bad Gateway",
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/WEO/NGDPDPC.?startPeriod=2023&endPeriod=2023&format=CSV",
+      "status": null,
+      "error": "[Errno -2] Name or service not known",
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://opendata.icbc.com/dataset/vehicle-population",
+      "status": null,
+      "error": "[Errno -2] Name or service not known",
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://open.icbc.com/dataset/vehicle-population-2020.csv",
+      "status": null,
+      "error": "[Errno -2] Name or service not known",
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://open.icbc.com/dataset/vehicle-population-2023.csv",
+      "status": null,
+      "error": "[Errno -2] Name or service not known",
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://data.stats.govt.nz/table/CEN23_HAD_020",
+      "status": null,
+      "error": "[Errno -5] No address associated with hostname",
+      "samples": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://www.mlj.goums.ac.ir/browse.php?a_id=1468&slc_lang=en&html=1",
+      "status": null,
+      "error": "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Hostname mismatch, certificate is not valid for 'www.mlj.goums.ac.ir'. (_ssl.c:1000)",
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/CP/CP?item=Food&year=2015&month=1&format=csv",
+      "status": null,
+      "error": "The read operation timed out",
+      "samples": [
+        "dsqa_id_133"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/Prices/FCPI?downloadFormat=csv&year=2010&month=1",
+      "status": null,
+      "error": "The read operation timed out",
+      "samples": [
+        "dsqa_id_133"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/CP/food?downloadFormat=csv&year=2010&month=1",
+      "status": null,
+      "error": "The read operation timed out",
+      "samples": [
+        "dsqa_id_133"
+      ]
+    }
+  ],
+  "reachable_urls": [
+    {
+      "url": "http://goums.ac.ir/mljgoums/browse.php?mag_id=67&slc_lang=en",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "http://www.fujifilm-x.com/en-gb/support_compatibility/x-t3",
+      "status": 200,
+      "samples": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/42f7ca99-e7f3-40f7-93d7-f2500cccc315/resource/9ea3c62b-283f-434c-b1d6-e49e337fc459/download/vehicle_population_2020.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/42f7ca99-e7f3-40f7-93d7-f2500cccc315/resource/9ea3c62b-283f-434c-b1d6-e49e337fc459/download/vehicle_population_2023.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/icbc-vehicle-population",
+      "status": 200,
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/ROLL_600.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/index.asp?intNum=700",
+      "status": 200,
+      "samples": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://colab.ws/articles/10.1016/bs.amb.2017.06.002",
+      "status": 200,
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/dataset/busiest-airports-by-passenger-traffic",
+      "status": 200,
+      "samples": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/dataset/busiest-airports-by-passenger-traffic-em8jg",
+      "status": 200,
+      "samples": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/Transportation/MTA-Subway-Delay-Causing-Incidents-Beginning-2020/g937-7k7c",
+      "status": 200,
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/api/views/g937-7k7c/rows.csv?accessType=DOWNLOAD",
+      "status": 200,
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$limit=10",
+      "status": 200,
+      "samples": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/essa.php?instid=800000081568&year=2023&createreport=1&gradrate=1",
+      "status": 200,
+      "samples": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023",
+      "status": 200,
+      "samples": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023&instid=800000081568",
+      "status": 200,
+      "samples": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023&instid=statewide",
+      "status": 200,
+      "samples": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.un.org/_Docs/SYB/CSV/SYB67_230_202411_GDP%20and%20GDP%20Per%20Capita.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_62"
+      ]
+    },
+    {
+      "url": "https://datacommons.stanford.edu/ranking/Count_Person/City/geoId/12113",
+      "status": 200,
+      "samples": [
+        "dsqa_id_158"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1476/table-1223-passenger-journeys-by-operator.ods",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1496/4410-delay-compensation-claims.ods",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2048/passenger-performance-2021-22-q3.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/passenger-experience/delay-compensation-claims/table-4410-delay-compensation-claims",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/performance/passenger-rail-performance/table-3133-train-punctuality-at-recorded-station-stops-by-operator",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/usage/passenger-rail-usage/table-1223-passenger-journeys-by-operator",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/databrowser/view/earn_ses_pub1s/default/table",
+      "status": 200,
+      "samples": [
+        "dsqa_id_170"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/databrowser/view/ilc_peps01n/default/table?lang=en&category=ilc_peps01n.AGE.TOTAL.ilc_peps01n.SEX.T.ilc_peps01n.UNIT.PC.ilc_peps01n.TIME.2022",
+      "status": 200,
+      "samples": [
+        "dsqa_id_15"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-IA&cpresence=introduced",
+      "status": 200,
+      "samples": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-ID&cpresence=introduced",
+      "status": 200,
+      "samples": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-TX&cpresence=introduced",
+      "status": 200,
+      "samples": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-WA&cpresence=introduced",
+      "status": 200,
+      "samples": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-WI&cpresence=introduced",
+      "status": 200,
+      "samples": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://goums.ac.ir/mljgoums/article-1-1468-en.html",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://goums.ac.ir/mljgoums/article-1-1468-en.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://icbc.com/about-icbc/newsroom/Statistics",
+      "status": 200,
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://mlj.goums.ac.ir/article-1-1468-en.html",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d19/tables/dt19_226.60.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d20/tables/dt20_104.20.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_162"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d20/tables/dt20_226.60.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.50.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.60.asp",
+      "status": 200,
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.60.asp?current=yes",
+      "status": 200,
+      "samples": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://ocindex.net/assets/downloads/2023/english/ocindex_profile_australia_2023.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_0"
+      ]
+    },
+    {
+      "url": "https://openknowledge.fao.org/bitstreams/6c485171-8a5a-4379-92f6-b0e9fbc7e95d/download",
+      "status": 200,
+      "samples": [
+        "dsqa_id_93"
+      ]
+    },
+    {
+      "url": "https://openknowledge.fao.org/handle/20.500.14283/cd1194en",
+      "status": 200,
+      "samples": [
+        "dsqa_id_93"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/gdp-per-capita-worldbank.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/gdp-per-capita-worldbank.csv?downloadFormat=csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/homicide-rate-unodc.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/homicide-rate-unodc.csv?downloadFormat=csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-total.csv",
+      "status": 200,
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-total.csv?v=2024",
+      "status": 200,
+      "samples": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC10521074",
+      "status": 200,
+      "samples": [
+        "dsqa_id_159"
+      ]
+    },
+    {
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC9128411/",
+      "status": 200,
+      "samples": [
+        "dsqa_id_188"
+      ]
+    },
+    {
+      "url": "https://public.tableau.com/views/ICBCVehiclePopulationDashboard/VehiclePopulation",
+      "status": 200,
+      "samples": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://repository.library.noaa.gov/view/noaa/28145",
+      "status": 200,
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://repository.library.noaa.gov/view/noaa/65736/noaa_65736_DS1.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://sdgresources.relx.com/book-chapters/advances-marine-biology-chapter-6-age-and-growth-elasmobranchs-and-applications?page=179",
+      "status": 200,
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://sdgresources.relx.com/book-chapters/advances-marine-biology-chapter-6-age-and-growth-elasmobranchs-and-applications?page=20",
+      "status": 200,
+      "samples": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d#downloads",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d/start",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Estimates/Local-Health-Boards/populationestimates-by-lhb-age",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Health-Board-Population-Estimates-Mid2023",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://sustainabledevelopment-kyrgyzstan.github.io/en/8-6-1",
+      "status": 200,
+      "samples": [
+        "dsqa_id_52"
+      ]
+    },
+    {
+      "url": "https://web.archive.org/web/20241001/https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Estimates/Local-Health-Boards/populationestimates-by-lhb-age",
+      "status": 200,
+      "samples": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx",
+      "status": 200,
+      "samples": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2016",
+      "status": 200,
+      "samples": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2017",
+      "status": 200,
+      "samples": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2018",
+      "status": 200,
+      "samples": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2019",
+      "status": 200,
+      "samples": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www.cia.gov/the-world-factbook/countries/india/",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://www.england.nhs.uk/statistics/wp-content/uploads/sites/2/2014/03/Breastfeeding-1516Q11.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_9"
+      ]
+    },
+    {
+      "url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t2",
+      "status": 200,
+      "samples": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t3",
+      "status": 200,
+      "samples": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "https://www.goums.ac.ir/mljgoums/browse.php?a_id=2060&slc_lang=en",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://www.gov.uk/government/statistics/delay-compensation-claims-17-october-2021-to-8-january-2022-periods-8-to-10",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.gov.uk/government/statistics/passenger-rail-usage-october-to-december-2021",
+      "status": 200,
+      "samples": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.iea.org/data-and-statistics/data-tools/renewable-energy-progress-tracker",
+      "status": 200,
+      "samples": [
+        "dsqa_id_82"
+      ]
+    },
+    {
+      "url": "https://www.nhs.uk/conditions/shoulder-pain/",
+      "status": 200,
+      "samples": [
+        "dsqa_id_29"
+      ]
+    },
+    {
+      "url": "https://www.nhs.uk/symptoms/shoulder-pain",
+      "status": 200,
+      "samples": [
+        "dsqa_id_29"
+      ]
+    },
+    {
+      "url": "https://www.nps.gov/arch/learn/nature/species-lists.htm",
+      "status": 200,
+      "samples": [
+        "dsqa_id_60"
+      ]
+    },
+    {
+      "url": "https://www.nysenate.gov/sites/default/files/open-data/0361-cr23_mentalhealth-v2.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_92"
+      ]
+    },
+    {
+      "url": "https://www.nysenate.gov/sites/default/files/open-data/2022-mental-health-committee-annual-report.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_92"
+      ]
+    },
+    {
+      "url": "https://www.protectedplanet.net/country/AUT",
+      "status": 200,
+      "samples": [
+        "dsqa_id_129"
+      ]
+    },
+    {
+      "url": "https://www.protectedplanet.net/en/country/BEL",
+      "status": 200,
+      "samples": [
+        "dsqa_id_129"
+      ]
+    },
+    {
+      "url": "https://www.researchgate.net/publication/384128341_Evaluation_of_Soft_Tissue_Tumors_by_Fine_Needle_Aspiration_Cytology_and_Its_Correlation_with_Histopathology_A_Retrospective_Study_in_a_Tertiary_Care_Center",
+      "status": 200,
+      "samples": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-2023",
+      "status": 200,
+      "samples": [
+        "dsqa_id_4"
+      ]
+    },
+    {
+      "url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-the-world-in-2022",
+      "status": 200,
+      "samples": [
+        "dsqa_id_4"
+      ]
+    },
+    {
+      "url": "https://www.who.int/data/gho/data/indicators/indicator-details/GHO/estimated-percentage-of-hospitals-following-national-dementia-standards",
+      "status": 200,
+      "samples": [
+        "dsqa_id_43"
+      ]
+    },
+    {
+      "url": "https://www.who.int/data/gho/indicator-metadata-registry/imr-details/5123",
+      "status": 200,
+      "samples": [
+        "dsqa_id_43"
+      ]
+    },
+    {
+      "url": "https://www2.census.gov/library/publications/2024/demo/acsbr-022.pdf",
+      "status": 200,
+      "samples": [
+        "dsqa_id_175"
+      ]
+    }
+  ],
+  "all_results": [
+    {
+      "url": "https://www.sciencedirect.com/science/chapter/bookseries/pii/S0065288117300020",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://animalia.bio/dwarf-shrew",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_16"
+      ]
+    },
+    {
+      "url": "https://www.researchgate.net/publication/319156390_Age_and_Growth_of_Elasmobranchs_and_Applications_to_Fisheries_Management_and_Conservation_in_the_Northeast_Pacific_Ocean",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://ocindex.net/assets/downloads/2023/english/ocindex_profile_australia_2023.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_0"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/databrowser/view/ilc_peps01n/default/table?lang=en&category=ilc_peps01n.AGE.TOTAL.ilc_peps01n.SEX.T.ilc_peps01n.UNIT.PC.ilc_peps01n.TIME.2022",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_15"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/migr_imm1ctz?time=2022&format=TSV",
+      "content_type_guess": "unknown",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_15"
+      ]
+    },
+    {
+      "url": "https://sdgresources.relx.com/book-chapters/advances-marine-biology-chapter-6-age-and-growth-elasmobranchs-and-applications?page=179",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://sdgresources.relx.com/book-chapters/advances-marine-biology-chapter-6-age-and-growth-elasmobranchs-and-applications?page=20",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://www.england.nhs.uk/statistics/wp-content/uploads/sites/2/2014/03/Breastfeeding-1516Q11.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_9"
+      ]
+    },
+    {
+      "url": "https://repository.library.noaa.gov/view/noaa/28145",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-2023",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-2023/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_4"
+      ]
+    },
+    {
+      "url": "https://data.cityofnewyork.us/resource/kku6-nxdu.json?$select=line,count(*",
+      "content_type_guess": "json",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://colab.ws/articles/10.1016/bs.amb.2017.06.002",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$select=line,sum(total_delays",
+      "content_type_guess": "json",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$select=line,delay_cause,sum(total_delays",
+      "content_type_guess": "json",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.csv?$where=month",
+      "content_type_guess": "csv",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$where=month",
+      "content_type_guess": "json",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/resource/g937-7k7c.json?$limit=10",
+      "content_type_guess": "json",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/api/views/g937-7k7c/rows.csv?accessType=DOWNLOAD",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://data.ny.gov/Transportation/MTA-Subway-Delay-Causing-Incidents-Beginning-2020/g937-7k7c",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_8"
+      ]
+    },
+    {
+      "url": "https://repository.library.noaa.gov/view/noaa/65736/noaa_65736_DS1.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_21"
+      ]
+    },
+    {
+      "url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-the-world-in-2022",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.visionofhumanity.org/10-most-peaceful-countries-in-the-world-in-2022/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_4"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/index.asp?intNum=700",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/rollcalls_700_724",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/ROLL_600.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://clerk.house.gov/evs/2023/rollcalls_600_699",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_25"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-total.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-emigrants.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/migrant-stock-total.csv?v=2024",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?countries=all&startPeriod=2023&endPeriod=2023&format=csv",
+      "content_type_guess": "unknown",
+      "http_status": 502,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 502: Bad Gateway",
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?format=json",
+      "content_type_guess": "unknown",
+      "http_status": 502,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 502: Bad Gateway",
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://files.worldhappiness.report/WHR24/Figure-2-5.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_40"
+      ]
+    },
+    {
+      "url": "https://worldhappiness.report/ed/2024/data/WHR24-Figure2-5-Changes.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_40"
+      ]
+    },
+    {
+      "url": "https://api.imf.org/v2/data/NGDPDPC?countries=all&startPeriod=2023&endPeriod=2023&format=json",
+      "content_type_guess": "unknown",
+      "http_status": 502,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 502: Bad Gateway",
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-WA&cpresence=introduced",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-ID&cpresence=introduced",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-IA&cpresence=introduced",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-WI&cpresence=introduced",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://www.who.int/data/gho/data/indicators/indicator-details/GHO/estimated-percentage-of-hospitals-following-national-dementia-standards",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_43"
+      ]
+    },
+    {
+      "url": "https://www.nhs.uk/symptoms/shoulder-pain",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.nhs.uk/symptoms/shoulder-pain/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_29"
+      ]
+    },
+    {
+      "url": "https://fishbase.se/country/CountryChecklist.php?c_code=840&vhabitat=dangerous&csub_code=US-TX&cpresence=introduced",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_39"
+      ]
+    },
+    {
+      "url": "https://www.nhs.uk/conditions/shoulder-pain/",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.nhs.uk/symptoms/shoulder-pain/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_29"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/42f7ca99-e7f3-40f7-93d7-f2500cccc315/resource/9ea3c62b-283f-434c-b1d6-e49e337fc459/download/vehicle_population_2023.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/42f7ca99-e7f3-40f7-93d7-f2500cccc315/resource/9ea3c62b-283f-434c-b1d6-e49e337fc459/download/vehicle_population_2020.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://www.azed.gov/data/public-data-sets",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_56"
+      ]
+    },
+    {
+      "url": "https://icbc.com/about-icbc/newsroom/Statistics",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://www.who.int/data/gho/indicator-metadata-registry/imr-details/5123",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_43"
+      ]
+    },
+    {
+      "url": "https://unstats.un.org/SDGAPI/v1/sdg/Indicator/Data?indicator=8.6.1&year=2022",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_52"
+      ]
+    },
+    {
+      "url": "https://catalogue.data.gov.bc.ca/dataset/icbc-vehicle-population",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://sustainabledevelopment-kyrgyzstan.github.io/en/8-6-1",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://sustainabledevelopment-kyrgyzstan.github.io/en/8-6-1/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_52"
+      ]
+    },
+    {
+      "url": "https://data.un.org/_Docs/SYB/CSV/SYB67_230_202411_GDP%20and%20GDP%20Per%20Capita.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_62"
+      ]
+    },
+    {
+      "url": "https://www.nps.gov/arch/learn/nature/species-lists.htm",
+      "content_type_guess": "htm",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_60"
+      ]
+    },
+    {
+      "url": "https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/WEO/NGDPDPC.?startPeriod=2023&endPeriod=2023&format=CSV",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[Errno -2] Name or service not known",
+      "sample_ids": [
+        "dsqa_id_31"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023&instid=statewide",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023&instid=800000081568",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/gradrate.php?year=2023",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://data.nysed.gov/essa.php?instid=800000081568&year=2023&createreport=1&gradrate=1",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_59"
+      ]
+    },
+    {
+      "url": "https://opendata.icbc.com/dataset/vehicle-population",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[Errno -2] Name or service not known",
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://www.gov.uk/government/statistics/passenger-rail-usage-october-to-december-2021",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.gov.uk/government/statistics/delay-compensation-claims-17-october-2021-to-8-january-2022-periods-8-to-10",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://open.icbc.com/dataset/vehicle-population-2020.csv",
+      "content_type_guess": "csv",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[Errno -2] Name or service not known",
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2048/table-1223.ods",
+      "content_type_guess": "ods",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1496/4410-delay-compensation-claims.ods",
+      "content_type_guess": "ods",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2048/passenger-performance-2021-22-q3.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://open.icbc.com/dataset/vehicle-population-2023.csv",
+      "content_type_guess": "csv",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[Errno -2] Name or service not known",
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/passenger-experience/delay-compensation-claims/table-4410-delay-compensation-claims",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/2050/table-3133-2021-22-q3.ods",
+      "content_type_guess": "ods",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1223/table-1223-passenger-journeys-by-operator-2021-22-q3.ods",
+      "content_type_guess": "ods",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/performance/passenger-rail-performance/table-3133-train-punctuality-at-recorded-station-stops-by-operator",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/statistics/usage/passenger-rail-usage/table-1223-passenger-journeys-by-operator",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.oecd.org/en/publications/health-at-a-glance-2024",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_94"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2019",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2018",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2017",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx?year=2016",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www-fars.nhtsa.dot.gov/states/statescrashesandallvictims.aspx",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_75"
+      ]
+    },
+    {
+      "url": "https://www.iea.org/data-and-statistics/data-tools/renewable-energy-progress-tracker",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_82"
+      ]
+    },
+    {
+      "url": "https://www.iea.org/data-and-statistics/data-product/renewable-energy-progress-tracker/bioenergy-capacity-2021.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_82"
+      ]
+    },
+    {
+      "url": "https://public.tableau.com/views/ICBCVehiclePopulationDashboard/VehiclePopulation",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://public.tableau.com/app/resource-not-found",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_46"
+      ]
+    },
+    {
+      "url": "https://www.nysenate.gov/sites/default/files/open-data/0361-cr23_mentalhealth-v2.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_92"
+      ]
+    },
+    {
+      "url": "https://www.nysenate.gov/sites/default/files/open-data/2022-mental-health-committee-annual-report.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_92"
+      ]
+    },
+    {
+      "url": "https://stats.oecd.org/sdmx-json/data/HEALTH/MAMMOGRAPHY.MACHINES.ALL?startTime=2023&endTime=2023&dimensionAtObservation=allDimensions&csv=true",
+      "content_type_guess": "unknown",
+      "http_status": 405,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 405: Method Not Allowed",
+      "sample_ids": [
+        "dsqa_id_94"
+      ]
+    },
+    {
+      "url": "https://dataportal.orr.gov.uk/media/1476/table-1223-passenger-journeys-by-operator.ods",
+      "content_type_guess": "ods",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_68"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/economy/regionalaccounts/grossdisposablehouseholdincome/bulletins/regionalgrossdisposablehouseholdincomegdhi/1997to2021/downloads/RegionalGDHI_ITL3_2021_England.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/file?uri=/businessindustryandtrade/business/activitysizeandlocation/datasets/businessbirthsbylocalauthority2021.csv",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://crashstats.nhtsa.dot.gov/Api/Public/ViewPublication/813579",
+      "content_type_guess": "unknown",
+      "http_status": 405,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 405: Method Not Allowed",
+      "sample_ids": [
+        "dsqa_id_96"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/dataset/busiest-airports-by-passenger-traffic-em8jg",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/download/busiest-airports-by-passenger-traffic-em8jg",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://www.ons.gov.uk/file?uri=/businessindustryandtrade/business/activitysizeandlocation/datasets/businessdemography2021localauthority.csv",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_100"
+      ]
+    },
+    {
+      "url": "https://data.london.gov.uk/dataset/busiest-airports-by-passenger-traffic",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://data.london.gov.uk/dataset/busiest-airports-by-passenger-traffic-em8jg",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_105"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/CompleteBusBook_February2024.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/Route_99_Feb2024.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://www.octa.net/ebusbook/RoutePDF/route099.pdf?n=202402",
+      "content_type_guess": "pdf",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_102"
+      ]
+    },
+    {
+      "url": "https://www.protectedplanet.net/en/country/BEL",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_129"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d/view",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d/start",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://stats.gov.wales/en-GB/f7c81eb8-cf29-4d14-b964-04c155527e4d#downloads",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://www.protectedplanet.net/country/AUT",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_129"
+      ]
+    },
+    {
+      "url": "https://cloud.ctbuh.org/CTBUH-100-Tallest-Buildings-1970.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_122"
+      ]
+    },
+    {
+      "url": "https://www.oecd.org/pisa/data/pisa2022/table_i_b1_2_9.xlsx",
+      "content_type_guess": "xlsx",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_146"
+      ]
+    },
+    {
+      "url": "https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Estimates/Local-Health-Boards/populationestimates-by-lhb-age",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://stats.gov.wales/en-GB/topic/71/people-identity-equality",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Health-Board-Population-Estimates-Mid2023",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://stats.gov.wales/en-GB/topic/71/people-identity-equality",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://www.ctbuh.org/knowledge/ctbuh-1970-100-tallest-buildings.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_122"
+      ]
+    },
+    {
+      "url": "https://www.pewresearch.org/short-reads/2024/11/14/1-in-10-americans-rarely-or-never-drive-a-car",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_149"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_CIG_002/1.0?references=all&detail=full",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_GEO_008/1.0?references=all&detail=full",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2023.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.999999.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/dataflow/STATSNZ/CEN23_HAD_020/1.0?references=all&detail=full",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2018.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.999999.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/codelist/STATSNZ/CEN23_ETH_004/1.0?references=all&detail=full",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/data/STATSNZ,CEN23_HAD_020,1.0/2023.01+02+03+04+05+06+07+08+09+10+11+12+13+14+15+16.03.02.99.99?dimensionAtObservation=AllDimensions&format=csvfilewithlabels",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://api.data.stats.govt.nz/rest/datastructure/STATSNZ/CEN23_HAD_020/1.0?references=all&detail=full",
+      "content_type_guess": "unknown",
+      "http_status": 401,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 401: Unauthorized",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://openknowledge.fao.org/bitstreams/6c485171-8a5a-4379-92f6-b0e9fbc7e95d/download",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://openknowledge.fao.org/server/api/core/bitstreams/6c485171-8a5a-4379-92f6-b0e9fbc7e95d/content",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_93"
+      ]
+    },
+    {
+      "url": "https://openknowledge.fao.org/handle/20.500.14283/cd1194en",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_93"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/earn_ses_pub1s?time=2022&format=TSV",
+      "content_type_guess": "unknown",
+      "http_status": 400,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 400: Bad Request",
+      "sample_ids": [
+        "dsqa_id_170"
+      ]
+    },
+    {
+      "url": "https://ec.europa.eu/eurostat/databrowser/view/earn_ses_pub1s/default/table",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_170"
+      ]
+    },
+    {
+      "url": "https://openprescribing.net/pcn/U05458/concessions?month=2022-12",
+      "content_type_guess": "unknown",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_161"
+      ]
+    },
+    {
+      "url": "https://datacommons.stanford.edu/ranking/Count_Person/City/geoId/12113",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_158"
+      ]
+    },
+    {
+      "url": "https://www.researchgate.net/publication/384128341_Evaluation_of_Soft_Tissue_Tumors_by_Fine_Needle_Aspiration_Cytology_and_Its_Correlation_with_Histopathology_A_Retrospective_Study_in_a_Tertiary_Care_Center",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://web.archive.org/web/20241001/https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Estimates/Local-Health-Boards/populationestimates-by-lhb-age",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://web.archive.org/web/20240912083330/https://statswales.gov.wales/Catalogue/Population-and-Migration/Population/Estimates/Local-Health-Boards/populationestimates-by-lhb-age",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_118"
+      ]
+    },
+    {
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC10521074",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC10521074/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_159"
+      ]
+    },
+    {
+      "url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t3",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t3/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "http://www.fujifilm-x.com/en-gb/support_compatibility/x-t3",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.fujifilm-x.com/en-gb/support/compatibility/cameras/x-t3/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t2",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.fujifilm-x.com/en-us/support/compatibility/cameras/x-t2/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_147"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d20/tables/dt20_104.20.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_162"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/homicide-rate-unodc.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://www2.census.gov/library/publications/2024/demo/acsbr-022.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_175"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/share-with-drug-use-disorders.csv",
+      "content_type_guess": "csv",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/gdp-per-capita-worldbank.csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/share-with-drug-use-disorders.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/homicide-rate-unodc.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/api/data/gdp-per-capita-worldbank.csv",
+      "content_type_guess": "csv",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/share-with-drug-use-disorders.csv?downloadFormat=csv",
+      "content_type_guess": "csv",
+      "http_status": 403,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 403: Forbidden",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://www150.statcan.gc.ca/t1/tbl1/en/csv/3510000501?download=1",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_176"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/homicide-rate-unodc.csv?downloadFormat=csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC9128411/",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_188"
+      ]
+    },
+    {
+      "url": "https://ourworldindata.org/grapher/gdp-per-capita-worldbank.csv?downloadFormat=csv",
+      "content_type_guess": "csv",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://www.cia.gov/the-world-factbook/countries/india/",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": "https://www.cia.gov/stories/story/spotlighting-the-world-factbook-as-we-bid-a-fond-farewell/",
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://ghdx.healthdata.org/record/ihme-data/gbd-2021-prevalence-drug-use-disorders",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_178"
+      ]
+    },
+    {
+      "url": "https://data.stats.govt.nz/table/CEN23_HAD_020",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[Errno -5] No address associated with hostname",
+      "sample_ids": [
+        "dsqa_id_155"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/dt23_226.50.xls",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.60.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.50.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/dt23_226.60.asp?current=yes",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/tabn226.60.xls",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d23/tables/xls/dt23_226.60.xls",
+      "content_type_guess": "unknown",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://mlj.goums.ac.ir/article-1-1468-en.html",
+      "content_type_guess": "html",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d19/tables/dt19_226.60.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://nces.ed.gov/programs/digest/d20/tables/dt20_226.60.asp",
+      "content_type_guess": "asp",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_194"
+      ]
+    },
+    {
+      "url": "https://www.woodlandtrust.org.uk/publications/2024/12/report-and-accounts-2023-2024.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 404,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 404: Not Found",
+      "sample_ids": [
+        "dsqa_id_184"
+      ]
+    },
+    {
+      "url": "https://www.nationalmerit.org/s/1758/images/gid2/editor_documents/merit_sponsor_leaflet_2022.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 302,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "HTTP Error 302: The HTTP server returned a redirect error that would lead to an infinite loop.\nThe last 30x error message was:\nFound",
+      "sample_ids": [
+        "dsqa_id_81"
+      ]
+    },
+    {
+      "url": "https://www.mlj.goums.ac.ir/browse.php?a_id=1468&slc_lang=en&html=1",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Hostname mismatch, certificate is not valid for 'www.mlj.goums.ac.ir'. (_ssl.c:1000)",
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "http://goums.ac.ir/mljgoums/browse.php?mag_id=67&slc_lang=en",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://goums.ac.ir/mljgoums/article-1-1468-en.html",
+      "content_type_guess": "html",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://goums.ac.ir/mljgoums/article-1-1468-en.pdf",
+      "content_type_guess": "pdf",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/CP/CP?item=Food&year=2015&month=1&format=csv",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "The read operation timed out",
+      "sample_ids": [
+        "dsqa_id_133"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/Prices/FCPI?downloadFormat=csv&year=2010&month=1",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "The read operation timed out",
+      "sample_ids": [
+        "dsqa_id_133"
+      ]
+    },
+    {
+      "url": "https://fenixservices.fao.org/faostat/api/v1/en/CP/food?downloadFormat=csv&year=2010&month=1",
+      "content_type_guess": "unknown",
+      "http_status": null,
+      "reachable": false,
+      "redirect_url": null,
+      "error": "The read operation timed out",
+      "sample_ids": [
+        "dsqa_id_133"
+      ]
+    },
+    {
+      "url": "https://www.goums.ac.ir/mljgoums/browse.php?a_id=2060&slc_lang=en",
+      "content_type_guess": "unknown",
+      "http_status": 200,
+      "reachable": true,
+      "redirect_url": null,
+      "error": null,
+      "sample_ids": [
+        "dsqa_id_173"
+      ]
+    }
+  ]
+}

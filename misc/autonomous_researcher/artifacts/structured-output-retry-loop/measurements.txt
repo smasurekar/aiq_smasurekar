@@ -1,0 +1,113 @@
+=== 1. lifecycle events: run_research_batch starts, never ends ===
+event totals: {'FUNCTION_START': 2, 'LLM_START': 142, 'LLM_END': 141, 'TOOL_START': 21, 'TOOL_END': 20}
+  FUNCTION_START <workflow>                   1
+  FUNCTION_START autonomous_research_agent    1
+  TOOL_END       fetch_url_tool               6
+  TOOL_END       web_search_tool              14
+  TOOL_START     fetch_url_tool               6
+  TOOL_START     run_research_batch           1
+  TOOL_START     web_search_tool              14
+
+=== 2. what the model asked for, by tool name ===
+-- deepsearchqa-0002__DsPCtn4
+    118 → ResearchNotes
+     14 → web_search_tool
+      6 → fetch_url_tool
+      1 → run_research_batch
+-- deepsearchqa-0004__gcnVpr2
+    187 → ResearchNotes
+     27 → advanced_web_search_tool
+     25 → fetch_url_tool
+      3 → run_research_batch
+      2 → think
+
+=== 3. identical ResearchNotes payloads (args digest histogram) ===
+-- deepsearchqa-0002__DsPCtn4
+    115 chars=13731 ref=sha256:8ae1ed823ece
+      1 chars=5136 ref=sha256:d0af5f5dcb33
+      1 chars=5131 ref=sha256:66bef782184f
+      1 chars=4673 ref=sha256:19fa5be6024f
+-- deepsearchqa-0004__gcnVpr2
+    154 chars=5830 ref=sha256:d7c6db4aa27a
+      3 chars=5097 ref=sha256:58a3d50159c2
+      3 chars=5053 ref=sha256:b675464dc633
+      3 chars=4788 ref=sha256:9522a890f0b7
+      3 chars=3059 ref=sha256:383a7e1d4bb5
+
+=== 4. prompt-token growth per retry (completion is constant) ===
+call=107  prompt=156672   delta=3552     completion=3430
+call=108  prompt=160224   delta=3552     completion=3430
+call=109  prompt=163776   delta=3552     completion=3430
+call=110  prompt=167328   delta=3552     completion=3430
+call=111  prompt=154926   delta=-12402   completion=1053
+call=112  prompt=18185    delta=-136741  completion=3430
+call=113  prompt=21737    delta=3552     completion=3430
+call=114  prompt=25289    delta=3552     completion=3430
+call=115  prompt=28841    delta=3552     completion=3430
+call=116  prompt=32393    delta=3552     completion=3430
+call=117  prompt=35945    delta=3552     completion=3430
+call=118  prompt=39497    delta=3552     completion=3430
+call=119  prompt=43049    delta=3552     completion=3430
+call=120  prompt=46601    delta=3552     completion=3430
+call=121  prompt=50153    delta=3552     completion=3430
+call=122  prompt=53705    delta=3552     completion=3430
+call=123  prompt=57257    delta=3552     completion=3430
+call=124  prompt=60809    delta=3552     completion=3430
+call=125  prompt=64361    delta=3552     completion=3430
+call=126  prompt=67913    delta=3552     completion=3430
+call=127  prompt=71465    delta=3552     completion=3430
+call=128  prompt=75017    delta=3552     completion=3430
+call=129  prompt=78569    delta=3552     completion=3430
+call=130  prompt=82121    delta=3552     completion=3430
+call=131  prompt=85673    delta=3552     completion=3430
+call=132  prompt=89225    delta=3552     completion=3430
+call=133  prompt=92777    delta=3552     completion=3430
+call=134  prompt=96329    delta=3552     completion=3430
+call=135  prompt=99881    delta=3552     completion=3430
+call=136  prompt=103433   delta=3552     completion=3430
+call=137  prompt=106985   delta=3552     completion=3430
+call=138  prompt=110537   delta=3552     completion=3430
+call=139  prompt=114089   delta=3552     completion=3430
+call=140  prompt=117641   delta=3552     completion=3430
+call=141  prompt=121193   delta=3552     completion=3430
+
+=== 5. reasoning_content on every completion (sha256 01ba4719c80b == "\n") ===
+    138 [Reasoning] chars=1 ref=sha256:01ba4719c80b
+      1 [Reasoning] chars=915 ref=sha256:783f39f9b786
+      1 [Reasoning] chars=1598 ref=sha256:25caf11fefb3
+      1 [Reasoning] chars=1454 ref=sha256:631475664291
+
+=== 6. the loop predates 48626d1: worst identical-payload streak per trial ===
+2026-08-20__12-58-09     1x streak=4  63x streak=1  26x streak=0
+2026-08-20__16-47-37     2x streak=3  61x streak=1  27x streak=0
+2026-08-20__21-44-00     1x streak=4  1x streak=2  54x streak=1  34x streak=0
+2026-08-21__11-12-50     1x streak=152  1x streak=115  1x streak=6  1x streak=5  1x streak=3
+
+=== 7. job outcome ===
+trials: 5 errors: 2
+metrics: {'correct_with_excessive_answers': 0.0, 'f1_score': 0.4, 'fully_correct': 0.4, 'fully_incorrect': 0.2, 'grader_valid': 0.6, 'precision': 0.4, 'recall': 0.4, 'reward': 0.4}
+exceptions: {'AgentTimeoutError': ['deepsearchqa-0004__gcnVpr2', 'deepsearchqa-0002__DsPCtn4']}
+
+=== 8. same 5 smoke tasks, same config, before vs after 48626d1 ===
+-- 2026-08-19__17-06-25
+   deepsearchqa-0001__5WCtNHB   worst_identical_streak=1     total_ResearchNotes=4
+   deepsearchqa-0002__JXQVYhU   worst_identical_streak=1     total_ResearchNotes=8
+   deepsearchqa-0003__6jp5p85   worst_identical_streak=1     total_ResearchNotes=1
+   deepsearchqa-0004__eAJJDBt   worst_identical_streak=0     total_ResearchNotes=0
+   deepsearchqa-0005__8UGnimU   worst_identical_streak=1     total_ResearchNotes=5
+-- 2026-08-20__21-25-36
+   deepsearchqa-0001__VCktc4e   worst_identical_streak=1     total_ResearchNotes=2
+   deepsearchqa-0002__ZJyLsYW   worst_identical_streak=1     total_ResearchNotes=5
+   deepsearchqa-0003__qAZRsti   worst_identical_streak=1     total_ResearchNotes=1
+   deepsearchqa-0004__9RKD8AL   worst_identical_streak=1     total_ResearchNotes=5
+   deepsearchqa-0005__788Jd3V   worst_identical_streak=1     total_ResearchNotes=13
+-- 2026-08-21__11-12-50
+   deepsearchqa-0001__zHKz4HM   worst_identical_streak=5     total_ResearchNotes=6
+   deepsearchqa-0002__DsPCtn4   worst_identical_streak=115   total_ResearchNotes=118
+   deepsearchqa-0003__Xyovei8   worst_identical_streak=3     total_ResearchNotes=4
+   deepsearchqa-0004__gcnVpr2   worst_identical_streak=152   total_ResearchNotes=187
+   deepsearchqa-0005__obUcFu8   worst_identical_streak=6     total_ResearchNotes=40
+
+=== 9. tokens burned inside the loop ===
+-- deepsearchqa-0002__DsPCtn4: total prompt=10500587 completion=402311 tokens
+-- deepsearchqa-0004__gcnVpr2: total prompt=15887019 completion=319660 tokens

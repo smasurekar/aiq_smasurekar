@@ -1,0 +1,125 @@
+{
+    "id": "cd443508-af4e-42df-9c0d-161b1cd8320a",
+    "started_at": "2026-08-21T14:00:00.343609",
+    "updated_at": "2026-08-21T14:07:08.355293",
+    "finished_at": "2026-08-21T14:07:08.355293",
+    "n_total_trials": 5,
+    "stats": {
+        "n_completed_trials": 5,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "aiq-agent__deepsearchqa-smoke": {
+                "n_trials": 5,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "correct_with_excessive_answers": 0.0,
+                        "f1_score": 0.2,
+                        "fully_correct": 0.2,
+                        "fully_incorrect": 0.8,
+                        "grader_valid": 1.0,
+                        "precision": 0.2,
+                        "recall": 0.2,
+                        "reward": 0.2
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "fully_correct": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "fully_incorrect": {
+                        "1.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "0.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "correct_with_excessive_answers": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0004__p5kdgJE",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ]
+                    },
+                    "precision": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "recall": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "f1_score": {
+                        "0.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ],
+                        "1.0": [
+                            "deepsearchqa-0004__p5kdgJE"
+                        ]
+                    },
+                    "grader_valid": {
+                        "1.0": [
+                            "deepsearchqa-0005__VmtFoh3",
+                            "deepsearchqa-0004__p5kdgJE",
+                            "deepsearchqa-0001__gjuremo",
+                            "deepsearchqa-0003__NNxWvxC",
+                            "deepsearchqa-0002__R7r38jJ"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 5023678,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 94847,
+        "cost_usd": null
+    }
+}

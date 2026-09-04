@@ -1,0 +1,91 @@
+=== 1. the loop is bounded: worst identical-payload streak per trial ===
+-- 2026-08-21__11-12-50
+   deepsearchqa-0001__zHKz4HM   worst_identical_streak=5     total_ResearchNotes=6
+   deepsearchqa-0002__DsPCtn4   worst_identical_streak=115   total_ResearchNotes=118
+   deepsearchqa-0003__Xyovei8   worst_identical_streak=3     total_ResearchNotes=4
+   deepsearchqa-0004__gcnVpr2   worst_identical_streak=152   total_ResearchNotes=187
+   deepsearchqa-0005__obUcFu8   worst_identical_streak=6     total_ResearchNotes=40
+-- 2026-08-21__13-59-47
+   deepsearchqa-0001__gjuremo   worst_identical_streak=2     total_ResearchNotes=9
+   deepsearchqa-0002__R7r38jJ   worst_identical_streak=1     total_ResearchNotes=6
+   deepsearchqa-0003__NNxWvxC   worst_identical_streak=3     total_ResearchNotes=9
+   deepsearchqa-0004__p5kdgJE   worst_identical_streak=0     total_ResearchNotes=0
+   deepsearchqa-0005__VmtFoh3   worst_identical_streak=1     total_ResearchNotes=6
+-- 2026-08-21__14-11-50
+   deepsearchqa-0001__AN3ukZa   worst_identical_streak=2     total_ResearchNotes=6
+   deepsearchqa-0002__YCdB2MT   worst_identical_streak=2     total_ResearchNotes=6
+   deepsearchqa-0003__UXB2VjA   worst_identical_streak=3     total_ResearchNotes=9
+   deepsearchqa-0004__zZrUQiE   worst_identical_streak=3     total_ResearchNotes=6
+   deepsearchqa-0005__ChBLchV   worst_identical_streak=2     total_ResearchNotes=12
+
+=== 2. rejection census, guard job (AIQ_LOG_PAYLOADS unset) ===
+   total rejections:       30
+   hit the cap:            8
+   payload captured:       0 / 30
+   per trial:              {'deepsearchqa-0001__gjuremo': 8, 'deepsearchqa-0002__R7r38jJ': 5, 'deepsearchqa-0003__NNxWvxC': 10, 'deepsearchqa-0004__p5kdgJE': 1, 'deepsearchqa-0005__VmtFoh3': 6}
+      28  ResearchNotes.evidence_judgment  type=model_type
+       1  ResearchNotes.findings  type=list_type
+       1  AdaptiveResearchPlan.answer_strategy  type=model_type
+       1  AdaptiveResearchPlan.task_analysis  type=missing
+       1  AdaptiveResearchPlan.answer_strategy  type=missing
+       1  AdaptiveResearchPlan.constraints  type=missing
+       1  AdaptiveResearchPlan.queries  type=missing
+
+=== 3. rejection census, payload job (AIQ_LOG_PAYLOADS=1) ===
+   total rejections:       44
+   hit the cap:            16
+   payload captured:       44 / 44
+   per trial:              {'deepsearchqa-0001__AN3ukZa': 11, 'deepsearchqa-0002__YCdB2MT': 5, 'deepsearchqa-0003__UXB2VjA': 11, 'deepsearchqa-0004__zZrUQiE': 6, 'deepsearchqa-0005__ChBLchV': 11}
+      39  ResearchNotes.evidence_judgment  type=model_type
+       3  AdaptiveResearchPlan.queries.1.subqueries  type=too_long
+       2  AdaptiveResearchPlan.constraints  type=missing
+       2  AdaptiveResearchPlan.queries  type=missing
+       1  AdaptiveResearchPlan.answer_strategy  type=model_type
+       1  AdaptiveResearchPlan.answer_strategy.constraints  type=extra_forbidden
+       1  AdaptiveResearchPlan.answer_strategy.queries  type=extra_forbidden
+
+=== 4. THE DIAGNOSIS: real JSON type of the offending field in each rejected payload ===
+      39  ResearchNotes.evidence_judgment -> str
+       3  AdaptiveResearchPlan.queries.1.subqueries -> list
+       2  AdaptiveResearchPlan.constraints -> ABSENT
+       2  AdaptiveResearchPlan.queries -> ABSENT
+       1  AdaptiveResearchPlan.answer_strategy -> str
+       1  AdaptiveResearchPlan.answer_strategy.constraints -> dict
+       1  AdaptiveResearchPlan.answer_strategy.queries -> dict
+   stringified value re-parses to a dict: 39   malformed: 1
+
+=== 5. one verbatim instance ===
+   ResearchNotes.evidence_judgment was emitted as a JSON *string*:
+     {"relevance_score": 95, "confidence": "high", "rationale": "Comprehensive coverage of all 38 OECD countries for both criminality and resilience scores for 2021 and 2023, sourced directly from the official Organised Crime Index website. All ...
+   sibling list-of-object fields in the same payload:
+     findings:        list[7 objects]   <- correctly typed
+     gaps:            list[2 objects]   <- correctly typed
+     sources:         list[3 objects]   <- correctly typed
+
+=== 6. job outcomes ===
+-- 2026-08-21__11-12-50  finished=2026-08-21T11:51:28.806761
+   trials=5 errors=2 exceptions={'AgentTimeoutError': ['deepsearchqa-0004__gcnVpr2', 'deepsearchqa-0002__DsPCtn4']}
+   reward=0.4 grader_valid=0.6
+   tokens in=5875681 out=136003
+-- 2026-08-21__13-59-47  finished=2026-08-21T14:07:08.355293
+   trials=5 errors=0 exceptions={}
+   reward=0.2 grader_valid=1.0
+   tokens in=5023678 out=94847
+-- 2026-08-21__14-11-50  finished=2026-08-21T14:21:43.969000
+   trials=5 errors=0 exceptions={}
+   reward=0.26666666666666666 grader_valid=1.0
+   tokens in=7918152 out=131419
+
+=== 7. console log size (cost of AIQ_LOG_PAYLOADS=1, uncapped) ===
+-- 2026-08-21__13-59-47
+   deepsearchqa-0001__gjuremo        172548 bytes  payload_lines=0
+   deepsearchqa-0002__R7r38jJ         68117 bytes  payload_lines=0
+   deepsearchqa-0003__NNxWvxC         77509 bytes  payload_lines=0
+   deepsearchqa-0004__p5kdgJE         35829 bytes  payload_lines=0
+   deepsearchqa-0005__VmtFoh3         97138 bytes  payload_lines=0
+-- 2026-08-21__14-11-50
+   deepsearchqa-0001__AN3ukZa       3742301 bytes  payload_lines=584
+   deepsearchqa-0002__YCdB2MT       1301764 bytes  payload_lines=333
+   deepsearchqa-0003__UXB2VjA       7377151 bytes  payload_lines=357
+   deepsearchqa-0004__zZrUQiE        932488 bytes  payload_lines=401
+   deepsearchqa-0005__ChBLchV       3213790 bytes  payload_lines=301
